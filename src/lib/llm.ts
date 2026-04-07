@@ -42,13 +42,6 @@ export interface ModelOption {
 
 export const AVAILABLE_MODELS: ModelOption[] = [
   {
-    id: 'default',
-    name: 'Default (z-ai-sdk)',
-    provider: 'zai',
-    description: 'Default AI model via z-ai-web-dev-sdk',
-    maxTokens: 4096,
-  },
-  {
     id: 'z-ai/glm4.7',
     name: 'GLM 4.7',
     provider: 'nvidia',
@@ -68,6 +61,13 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     provider: 'nvidia',
     description: 'Moonshot AI Kimi 2.5 — 长上下文，优秀的指令遵循能力',
     maxTokens: 8192,
+  },
+  {
+    id: 'default',
+    name: 'Default (z-ai-sdk)',
+    provider: 'zai',
+    description: 'Default AI model via z-ai-web-dev-sdk (local only)',
+    maxTokens: 4096,
   },
 ];
 

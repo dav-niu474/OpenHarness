@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from 'next/server';
 import { db, ensureDatabase } from '@/lib/db';
 import { chat, getModelInfo, type LLMMessage } from '@/lib/llm';
@@ -5,7 +7,8 @@ import { chat, getModelInfo, type LLMMessage } from '@/lib/llm';
 export async function POST(req: NextRequest) {
   try {
     await ensureDatabase();
-    const { agentId, message, conversationId, modelId } = await req.json();
+    const { agentId, message, conversationId, modelId, model } = await req.json();
+    const effectiveModelReqId = modelId || model;
 
     if (!message || typeof message !== 'string') {
       return NextResponse.json(
@@ -22,8 +25,8 @@ export async function POST(req: NextRequest) {
     };
     const dbAgentId = agentIdMap[agentId] || agentId || null;
 
-    // Determine model
-    let effectiveModelId = modelId || 'default';
+    // Determine model - default to NVIDIA GLM 4.7 for Vercel compatibility
+    let effectiveModelId = effectiveModelReqId || 'z-ai/glm4.7';
     let systemPrompt = 'You are an AI agent powered by OpenHarness. You are a helpful coding assistant with access to tools like file operations, web search, and code analysis. Respond concisely and helpfully. Use markdown formatting when appropriate.';
 
     if (dbAgentId) {

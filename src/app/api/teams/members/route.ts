@@ -1,6 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db, ensureDatabase } from '@/lib/db';
 
+export const dynamic = 'force-dynamic';
+
+// GET /api/teams/members - List all team members
+export async function GET() {
+  try {
+    await ensureDatabase();
+    const members = await db.teamMember.findMany({
+      include: {
+        agent: { select: { id: true, name: true, status: true, type: true } },
+        team: { select: { id: true, name: true } },
+      },
+    });
+    return NextResponse.json({ success: true, data: members });
+  } catch (error) {
+    console.error('List team members error:', error);
+    return NextResponse.json(
+      { success: false, error: String(error) },
+      { status: 500 }
+    );
+  }
+}
+
 // POST /api/teams/members - Add member to team
 export async function POST(req: NextRequest) {
   try {

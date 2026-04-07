@@ -1,6 +1,34 @@
 import { NextResponse } from 'next/server';
 import { db, ensureDatabase } from '@/lib/db';
 
+export const dynamic = 'force-dynamic';
+
+// GET /api/seed - Check seed status
+export async function GET() {
+  try {
+    await ensureDatabase();
+    const agentCount = await db.agent.count();
+    const toolCount = await db.tool.count();
+    const skillCount = await db.skill.count();
+    const taskCount = await db.task.count();
+    const teamCount = await db.agentTeam.count();
+    const ruleCount = await db.permissionRule.count();
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        message: 'Database is ready',
+        counts: { agents: agentCount, tools: toolCount, skills: skillCount, tasks: taskCount, teams: teamCount, permissionRules: ruleCount },
+      },
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { success: false, error: String(error) },
+      { status: 500 }
+    );
+  }
+}
+
 export async function POST() {
   try {
     await ensureDatabase();
