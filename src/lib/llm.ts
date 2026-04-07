@@ -49,21 +49,21 @@ export const AVAILABLE_MODELS: ModelOption[] = [
     maxTokens: 4096,
   },
   {
-    id: 'glm-4.7',
+    id: 'z-ai/glm4.7',
     name: 'GLM 4.7',
     provider: 'nvidia',
     description: 'Zhipu AI GLM 4.7 — 强大的中文理解和代码生成能力',
     maxTokens: 8192,
   },
   {
-    id: 'glm-5',
+    id: 'z-ai/glm5',
     name: 'GLM 5',
     provider: 'nvidia',
     description: 'Zhipu AI GLM 5 — 最新一代大模型，推理能力更强',
     maxTokens: 8192,
   },
   {
-    id: 'kimi-2.5',
+    id: 'moonshotai/kimi-k2.5',
     name: 'Kimi 2.5',
     provider: 'nvidia',
     description: 'Moonshot AI Kimi 2.5 — 长上下文，优秀的指令遵循能力',
@@ -149,7 +149,42 @@ async function chatWithNVIDIA(
     throw new Error('NVIDIA_API_KEY is not configured. Please set it in .env.local');
   }
 
-  if (stream) {
+  // Set timeout to prevent hanging on slow/unavailable models
+  const controller = new AbortController();
+  const timeoutMs = 90000; // 90 seconds
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    if (stream) {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          stream: true,
+          max_tokens: 4096,
+          temperature: 0.7,
+          top_p: 0.95,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`NVIDIA API error (${response.status}): ${errorText}`);
+      }
+
+      if (!response.body) {
+        throw new Error('NVIDIA API returned no response body');
+      }
+
+      return response.body;
+    }
+
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -159,11 +194,12 @@ async function chatWithNVIDIA(
       body: JSON.stringify({
         model,
         messages,
-        stream: true,
+        stream: false,
         max_tokens: 4096,
         temperature: 0.7,
         top_p: 0.95,
       }),
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -171,47 +207,27 @@ async function chatWithNVIDIA(
       throw new Error(`NVIDIA API error (${response.status}): ${errorText}`);
     }
 
-    if (!response.body) {
-      throw new Error('NVIDIA API returned no response body');
+    const data = await response.json();
+    const reply = data.choices?.[0]?.message?.content || 'No response generated.';
+
+    return {
+      content: reply,
+      usage: data.usage
+        ? {
+            prompt_tokens: data.usage.prompt_tokens,
+            completion_tokens: data.usage.completion_tokens,
+            total_tokens: data.usage.total_tokens,
+          }
+        : undefined,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(`NVIDIA API request timed out after ${timeoutMs / 1000}s. The model "${model}" might be temporarily unavailable. Please try again or use a different model.`);
     }
-
-    return response.body;
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: false,
-      max_tokens: 4096,
-      temperature: 0.7,
-      top_p: 0.95,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`NVIDIA API error (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-  const reply = data.choices?.[0]?.message?.content || 'No response generated.';
-
-  return {
-    content: reply,
-    usage: data.usage
-      ? {
-          prompt_tokens: data.usage.prompt_tokens,
-          completion_tokens: data.usage.completion_tokens,
-          total_tokens: data.usage.total_tokens,
-        }
-      : undefined,
-  };
 }
 
 // ── Unified Chat Function ────────────────────────────────────────

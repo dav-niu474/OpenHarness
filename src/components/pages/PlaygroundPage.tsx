@@ -47,9 +47,9 @@ interface ModelOption {
 
 const MODEL_OPTIONS: ModelOption[] = [
   { id: 'default', name: 'Default (z-ai-sdk)', provider: 'zai', description: 'Default AI model' },
-  { id: 'glm-4.7', name: 'GLM 4.7', provider: 'nvidia', description: 'Zhipu AI — 中文理解和代码生成' },
-  { id: 'glm-5', name: 'GLM 5', provider: 'nvidia', description: 'Zhipu AI — 最新一代推理' },
-  { id: 'kimi-2.5', name: 'Kimi 2.5', provider: 'nvidia', description: 'Moonshot AI — 长上下文' },
+  { id: 'z-ai/glm4.7', name: 'GLM 4.7', provider: 'nvidia', description: 'Zhipu AI — 中文理解和代码生成' },
+  { id: 'z-ai/glm5', name: 'GLM 5', provider: 'nvidia', description: 'Zhipu AI — 最新一代推理' },
+  { id: 'moonshotai/kimi-k2.5', name: 'Kimi 2.5', provider: 'nvidia', description: 'Moonshot AI — 长上下文' },
 ];
 
 // ── Agent Options ──────────────────────────────────────────────
@@ -680,7 +680,7 @@ function AgentLoopStatusBar({ status, tokenCount, messageCount }: { status: 'idl
 
 export default function PlaygroundPage() {
   const [selectedAgent, setSelectedAgent] = useState('alpha');
-  const [selectedModel, setSelectedModel] = useState('glm-4.7');
+  const [selectedModel, setSelectedModel] = useState('z-ai/glm4.7');
   const [conversations, setConversations] = useState<ConversationItem[]>(() => [
     {
       id: 'conv-default',
@@ -711,7 +711,7 @@ export default function PlaygroundPage() {
   const activeConversation = conversations.find((c) => c.id === activeConvId);
   const messages = activeConversation?.messages ?? [];
 
-  const createNewChat = useCallback(() => {
+  const createNewChat = useCallback(async () => {
     const newConv: ConversationItem = {
       id: `conv-${Date.now()}`,
       title: 'New Conversation',
@@ -721,6 +721,35 @@ export default function PlaygroundPage() {
     };
     setConversations((prev) => [newConv, ...prev]);
     setActiveConvId(newConv.id);
+
+    // Also create a real DB conversation for persistence
+    try {
+      const agentIdMap: Record<string, string> = {
+        alpha: 'seed-alpha',
+        beta: 'seed-beta',
+        gamma: 'seed-gamma',
+      };
+      const dbAgentId = agentIdMap[selectedAgent] || 'seed-alpha';
+      const res = await fetch('/api/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: dbAgentId, title: 'New Conversation' }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.data?.id) {
+          // Update the conversation ID to the real DB ID
+          const dbId = data.data.id;
+          setConversations((prev) =>
+            prev.map((c) => (c.id === newConv.id ? { ...c, id: dbId } : c))
+          );
+          setActiveConvId(dbId);
+          return dbId;
+        }
+      }
+    } catch {
+      // If DB creation fails, keep using the local ID (chat will work without persistence)
+    }
     return newConv.id;
   }, [selectedAgent]);
 

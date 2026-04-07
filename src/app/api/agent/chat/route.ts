@@ -13,12 +13,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Map short agent IDs to DB IDs
+    const agentIdMap: Record<string, string> = {
+      alpha: 'seed-alpha',
+      beta: 'seed-beta',
+      gamma: 'seed-gamma',
+    };
+    const dbAgentId = agentIdMap[agentId] || agentId || null;
+
     // Determine model
     let effectiveModelId = modelId || 'default';
     let systemPrompt = 'You are an AI agent powered by OpenHarness. You are a helpful coding assistant with access to tools like file operations, web search, and code analysis. Respond concisely and helpfully. Use markdown formatting when appropriate.';
 
-    if (agentId) {
-      const agent = await db.agent.findUnique({ where: { id: agentId } });
+    if (dbAgentId) {
+      const agent = await db.agent.findUnique({ where: { id: dbAgentId } });
       if (agent) {
         systemPrompt = agent.systemPrompt || systemPrompt;
         if (!modelId && agent.provider === 'nvidia' && agent.model) {
@@ -30,6 +38,9 @@ export async function POST(req: NextRequest) {
     // Build messages
     const messages: LLMMessage[] = [{ role: 'system', content: systemPrompt }];
 
+    // If conversationId is provided, try to load history from DB
+    // If conversation doesn't exist, we'll skip DB persistence (supports client-only mode)
+    let dbConversationId: string | null = null;
     if (conversationId) {
       const conversation = await db.conversation.findUnique({
         where: { id: conversationId },
@@ -42,12 +53,14 @@ export async function POST(req: NextRequest) {
       });
 
       if (conversation) {
+        dbConversationId = conversation.id;
         for (const msg of conversation.messages) {
           if (msg.role !== 'system' && msg.content) {
             messages.push({ role: msg.role as LLMMessage['role'], content: msg.content });
           }
         }
       }
+      // If conversation not found, it's a client-only conversation — continue without DB persistence
     }
 
     messages.push({ role: 'user', content: message });
@@ -56,19 +69,23 @@ export async function POST(req: NextRequest) {
     const result = await chat(messages, effectiveModelId);
     const modelInfo = getModelInfo(effectiveModelId);
 
-    // Save messages to DB
-    if (conversationId) {
-      await db.message.create({
-        data: { conversationId, role: 'user', content: message },
-      });
-      await db.message.create({
-        data: {
-          conversationId,
-          role: 'assistant',
-          content: result.content,
-          tokenCount: result.usage?.total_tokens,
-        },
-      });
+    // Save messages to DB only if conversation exists
+    if (dbConversationId) {
+      try {
+        await db.message.create({
+          data: { conversationId: dbConversationId, role: 'user', content: message },
+        });
+        await db.message.create({
+          data: {
+            conversationId: dbConversationId,
+            role: 'assistant',
+            content: result.content,
+            tokenCount: result.usage?.total_tokens,
+          },
+        });
+      } catch (err) {
+        console.error('Failed to save messages:', err);
+      }
     }
 
     return NextResponse.json({
