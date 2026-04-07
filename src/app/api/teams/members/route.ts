@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // POST /api/teams/members - Add member to team
 export async function POST(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { teamId, agentId, role } = body;
 
@@ -69,6 +70,7 @@ export async function POST(req: NextRequest) {
 // DELETE /api/teams/members - Remove a member
 export async function DELETE(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { id } = body;
 

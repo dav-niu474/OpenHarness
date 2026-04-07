@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/skills - List all skills, optionally filtered by category
 export async function GET(req: NextRequest) {
   try {
+    await ensureDatabase();
     const { searchParams } = new URL(req.url);
     const category = searchParams.get('category');
     const loadedOnly = searchParams.get('loadedOnly') === 'true';
@@ -29,6 +30,7 @@ export async function GET(req: NextRequest) {
 // POST /api/skills - Create a new skill or toggle skill loaded state
 export async function POST(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { id, isLoaded, name, description, content, category } = body;
 
@@ -83,6 +85,7 @@ export async function POST(req: NextRequest) {
 // PUT /api/skills - Update a skill
 export async function PUT(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { id, ...updateFields } = body;
 

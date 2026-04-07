@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/conversations - List all conversations, optionally filtered by agentId
 export async function GET(req: NextRequest) {
   try {
+    await ensureDatabase();
     const { searchParams } = new URL(req.url);
     const agentId = searchParams.get('agentId');
     const status = searchParams.get('status');
@@ -39,6 +40,7 @@ export async function GET(req: NextRequest) {
 // POST /api/conversations - Create a new conversation
 export async function POST(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { agentId, title, status } = body;
 

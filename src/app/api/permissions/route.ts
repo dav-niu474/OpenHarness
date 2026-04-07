@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/permissions - List all permission rules, optionally filtered by mode
 export async function GET(req: NextRequest) {
   try {
+    await ensureDatabase();
     const { searchParams } = new URL(req.url);
     const mode = searchParams.get('mode');
 
@@ -27,6 +28,7 @@ export async function GET(req: NextRequest) {
 // POST /api/permissions - Create a new permission rule
 export async function POST(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { mode, pathPattern, isAllowed, commandDenyList } = body;
 
@@ -68,6 +70,7 @@ export async function POST(req: NextRequest) {
 // PUT /api/permissions - Update a permission rule
 export async function PUT(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { id, mode, isAllowed, commandDenyList } = body;
 
@@ -112,6 +115,7 @@ export async function PUT(req: NextRequest) {
 // DELETE /api/permissions - Delete a permission rule
 export async function DELETE(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { id } = body;
 

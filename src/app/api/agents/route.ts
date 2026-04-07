@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/agents - List all agents
 export async function GET(req: NextRequest) {
   try {
+    await ensureDatabase();
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status');
     const type = searchParams.get('type');
@@ -41,6 +42,7 @@ export async function GET(req: NextRequest) {
 // POST /api/agents - Create a new agent
 export async function POST(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { name, description, type, systemPrompt, provider, model, status, config } = body;
 

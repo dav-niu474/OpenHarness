@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/tasks - List all tasks, optionally filtered by status/agentId/teamId
 export async function GET(req: NextRequest) {
   try {
+    await ensureDatabase();
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status');
     const agentId = searchParams.get('agentId');
@@ -43,6 +44,7 @@ export async function GET(req: NextRequest) {
 // POST /api/tasks - Create a new task
 export async function POST(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { agentId, teamId, title, description, status, priority, result } = body;
 

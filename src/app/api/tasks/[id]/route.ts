@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/tasks/[id] - Get a single task
 export async function GET(
@@ -7,6 +7,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    await ensureDatabase();
     const { id } = await params;
     const task = await db.task.findUnique({
       where: { id },
@@ -39,6 +40,7 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    await ensureDatabase();
     const { id } = await params;
     const body = await req.json();
     const { status, progress, result, title, description, priority, agentId, teamId } = body;
@@ -85,6 +87,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    await ensureDatabase();
     const { id } = await params;
 
     const existing = await db.task.findUnique({ where: { id } });

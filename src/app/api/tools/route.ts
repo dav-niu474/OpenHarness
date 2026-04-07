@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/tools - List all tools, optionally filtered by category
 export async function GET(req: NextRequest) {
   try {
+    await ensureDatabase();
     const { searchParams } = new URL(req.url);
     const category = searchParams.get('category');
     const enabledOnly = searchParams.get('enabledOnly') === 'true';
@@ -29,6 +30,7 @@ export async function GET(req: NextRequest) {
 // POST /api/tools - Create a new tool
 export async function POST(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { name, description, category, inputSchema, permissionMode, isEnabled } = body;
 
@@ -63,6 +65,7 @@ export async function POST(req: NextRequest) {
 // PUT /api/tools - Toggle tool enabled state or update a tool
 export async function PUT(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { id, isEnabled, ...updateFields } = body;
 

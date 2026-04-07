@@ -1,11 +1,12 @@
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 import { chatStream, getModelInfo, type LLMMessage } from '@/lib/llm';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
+    await ensureDatabase();
     const { agentId, message, conversationId, modelId } = await req.json();
 
     if (!message || typeof message !== 'string') {

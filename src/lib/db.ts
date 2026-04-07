@@ -34,19 +34,39 @@ export async function ensureDatabase(): Promise<void> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    // On Vercel, seed on cold start if needed
-    // Schema is already pushed during build via postinstall + vercel-build
     if (process.env.VERCEL) {
       try {
-        // Check if data already exists
-        const agentCount = await db.agent.count();
-        if (agentCount === 0) {
-          console.log('[DB] Vercel: No data found, running inline seed...');
-          // Inline seed directly instead of fetching HTTP endpoint
+        // On Vercel, we need to push schema on first API call
+        // because SQLite doesn't persist between deployments
+        // Use Prisma's internal _executeRaw to check if tables exist
+        const result = await db.$queryRawUnsafe(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='Agent'"
+        ) as Array<{ name: string }>;
+
+        if (result.length === 0) {
+          console.log('[DB] Vercel: No tables found, creating schema...');
+          // Create tables using raw SQL from Prisma schema
+          await createTables();
+          console.log('[DB] Vercel: Schema created, seeding...');
           await inlineSeed();
-          console.log('[DB] Vercel: Inline seed completed');
+          console.log('[DB] Vercel: Initialization complete');
         } else {
-          console.log(`[DB] Vercel: Found ${agentCount} agents, skipping seed`);
+          // Tables exist, check if data needs seeding
+          try {
+            const agentCount = await db.agent.count();
+            if (agentCount === 0) {
+              console.log('[DB] Vercel: Tables exist but no data, seeding...');
+              await inlineSeed();
+              console.log('[DB] Vercel: Seeding complete');
+            } else {
+              console.log(`[DB] Vercel: Found ${agentCount} agents, ready`);
+            }
+          } catch {
+            // Table might be partially created, recreate
+            console.log('[DB] Vercel: Table check failed, recreating...');
+            await createTables();
+            await inlineSeed();
+          }
         }
       } catch (err) {
         console.error('[DB] Vercel auto-init failed:', err);
@@ -56,6 +76,154 @@ export async function ensureDatabase(): Promise<void> {
   })();
 
   return initPromise;
+}
+
+// Create all tables using raw SQL
+async function createTables() {
+  const sql = `
+    CREATE TABLE IF NOT EXISTS "Agent" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "description" TEXT,
+      "type" TEXT NOT NULL DEFAULT 'react',
+      "systemPrompt" TEXT NOT NULL,
+      "provider" TEXT NOT NULL DEFAULT 'openai',
+      "model" TEXT NOT NULL DEFAULT 'gpt-4',
+      "status" TEXT NOT NULL DEFAULT 'active',
+      "config" TEXT NOT NULL DEFAULT '{}',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS "Tool" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "description" TEXT,
+      "category" TEXT NOT NULL DEFAULT 'system',
+      "inputSchema" TEXT NOT NULL DEFAULT '{}',
+      "permissionMode" TEXT NOT NULL DEFAULT 'open',
+      "isEnabled" BOOLEAN NOT NULL DEFAULT 1,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS "Skill" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "description" TEXT,
+      "content" TEXT NOT NULL,
+      "category" TEXT NOT NULL DEFAULT 'general',
+      "isLoaded" BOOLEAN NOT NULL DEFAULT 0,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS "Conversation" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "agentId" TEXT NOT NULL,
+      "title" TEXT NOT NULL DEFAULT 'New Conversation',
+      "status" TEXT NOT NULL DEFAULT 'active',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL,
+      CONSTRAINT "Conversation_agentId_fkey" FOREIGN KEY ("agentId") REFERENCES "Agent" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS "Message" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "conversationId" TEXT NOT NULL,
+      "role" TEXT NOT NULL,
+      "content" TEXT NOT NULL DEFAULT '',
+      "toolCalls" TEXT NOT NULL DEFAULT '[]',
+      "toolResults" TEXT NOT NULL DEFAULT '[]',
+      "tokenCount" INTEGER,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "Message_conversationId_fkey" FOREIGN KEY ("conversationId") REFERENCES "Conversation" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS "AgentTeam" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "description" TEXT,
+      "config" TEXT NOT NULL DEFAULT '{}',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS "TeamMember" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "teamId" TEXT NOT NULL,
+      "agentId" TEXT NOT NULL,
+      "role" TEXT NOT NULL DEFAULT 'worker',
+      CONSTRAINT "TeamMember_teamId_agentId_key" UNIQUE ("teamId", "agentId"),
+      CONSTRAINT "TeamMember_teamId_fkey" FOREIGN KEY ("teamId") REFERENCES "AgentTeam" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+      CONSTRAINT "TeamMember_agentId_fkey" FOREIGN KEY ("agentId") REFERENCES "Agent" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS "Task" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "agentId" TEXT,
+      "teamId" TEXT,
+      "title" TEXT NOT NULL,
+      "description" TEXT,
+      "status" TEXT NOT NULL DEFAULT 'pending',
+      "priority" TEXT NOT NULL DEFAULT 'medium',
+      "progress" INTEGER NOT NULL DEFAULT 0,
+      "result" TEXT,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL,
+      CONSTRAINT "Task_agentId_fkey" FOREIGN KEY ("agentId") REFERENCES "Agent" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+      CONSTRAINT "Task_teamId_fkey" FOREIGN KEY ("teamId") REFERENCES "AgentTeam" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS "Memory" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "agentId" TEXT NOT NULL,
+      "key" TEXT NOT NULL,
+      "value" TEXT NOT NULL,
+      "category" TEXT NOT NULL DEFAULT 'context',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL,
+      CONSTRAINT "Memory_agentId_key_key" UNIQUE ("agentId", "key"),
+      CONSTRAINT "Memory_agentId_fkey" FOREIGN KEY ("agentId") REFERENCES "Agent" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS "PermissionRule" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "mode" TEXT NOT NULL DEFAULT 'allow',
+      "pathPattern" TEXT NOT NULL,
+      "isAllowed" BOOLEAN NOT NULL DEFAULT 1,
+      "commandDenyList" TEXT NOT NULL DEFAULT '[]',
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS "Agent_status_idx" ON "Agent" ("status");
+    CREATE INDEX IF NOT EXISTS "Agent_type_idx" ON "Agent" ("type");
+    CREATE INDEX IF NOT EXISTS "Tool_category_idx" ON "Tool" ("category");
+    CREATE INDEX IF NOT EXISTS "Tool_isEnabled_idx" ON "Tool" ("isEnabled");
+    CREATE INDEX IF NOT EXISTS "Skill_category_idx" ON "Skill" ("category");
+    CREATE INDEX IF NOT EXISTS "Skill_isLoaded_idx" ON "Skill" ("isLoaded");
+    CREATE INDEX IF NOT EXISTS "Conversation_agentId_idx" ON "Conversation" ("agentId");
+    CREATE INDEX IF NOT EXISTS "Conversation_status_idx" ON "Conversation" ("status");
+    CREATE INDEX IF NOT EXISTS "Conversation_createdAt_idx" ON "Conversation" ("createdAt");
+    CREATE INDEX IF NOT EXISTS "Message_conversationId_idx" ON "Message" ("conversationId");
+    CREATE INDEX IF NOT EXISTS "Message_createdAt_idx" ON "Message" ("createdAt");
+    CREATE INDEX IF NOT EXISTS "AgentTeam_name_idx" ON "AgentTeam" ("name");
+    CREATE INDEX IF NOT EXISTS "TeamMember_agentId_idx" ON "TeamMember" ("agentId");
+    CREATE INDEX IF NOT EXISTS "Task_agentId_idx" ON "Task" ("agentId");
+    CREATE INDEX IF NOT EXISTS "Task_teamId_idx" ON "Task" ("teamId");
+    CREATE INDEX IF NOT EXISTS "Task_status_idx" ON "Task" ("status");
+    CREATE INDEX IF NOT EXISTS "Task_priority_idx" ON "Task" ("priority");
+    CREATE INDEX IF NOT EXISTS "Task_createdAt_idx" ON "Task" ("createdAt");
+    CREATE INDEX IF NOT EXISTS "Memory_agentId_idx" ON "Memory" ("agentId");
+    CREATE INDEX IF NOT EXISTS "Memory_category_idx" ON "Memory" ("category");
+    CREATE INDEX IF NOT EXISTS "PermissionRule_mode_idx" ON "PermissionRule" ("mode");
+    CREATE INDEX IF NOT EXISTS "PermissionRule_pathPattern_idx" ON "PermissionRule" ("pathPattern");
+  `;
+
+  // Execute each statement separately
+  const statements = sql
+    .split(';')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  for (const stmt of statements) {
+    try {
+      await db.$executeRawUnsafe(stmt);
+    } catch (err) {
+      // Ignore "already exists" errors for tables and indexes
+      const msg = String(err);
+      if (!msg.includes('already exists') && !msg.includes('duplicate')) {
+        console.error('[DB] SQL error:', stmt.slice(0, 80), '→', msg);
+      }
+    }
+  }
 }
 
 // Lightweight inline seed for Vercel cold starts
@@ -77,19 +245,19 @@ async function inlineSeed() {
   // Seed tools
   const tools = [
     { name: 'Bash', description: 'Execute shell commands in a persistent environment with optional timeout.', category: 'file', permissionMode: 'restricted', inputSchema: JSON.stringify({ type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } }, required: ['command'] }) },
-    { name: 'Read', description: 'Read file contents from the local filesystem. Supports text files up to 2000 lines.', category: 'file', permissionMode: 'open', inputSchema: JSON.stringify({ type: 'object', properties: { path: { type: 'string' } }, required: ['path'] }) },
-    { name: 'Write', description: 'Write content to a file. Creates the file if it does not exist.', category: 'file', permissionMode: 'restricted', inputSchema: JSON.stringify({ type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] }) },
-    { name: 'Edit', description: 'Perform exact string replacements in existing files.', category: 'file', permissionMode: 'restricted', inputSchema: JSON.stringify({ type: 'object', properties: { path: { type: 'string' }, oldString: { type: 'string' }, newString: { type: 'string' } }, required: ['path', 'oldString', 'newString'] }) },
-    { name: 'Glob', description: 'Fast file pattern matching tool using glob patterns.', category: 'file', permissionMode: 'open', inputSchema: JSON.stringify({ type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] }) },
-    { name: 'Grep', description: 'Powerful search tool built on ripgrep with regex support.', category: 'file', permissionMode: 'open', inputSchema: JSON.stringify({ type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] }) },
-    { name: 'WebSearch', description: 'Search the web for real-time information.', category: 'search', permissionMode: 'open', inputSchema: JSON.stringify({ type: 'object', properties: { query: { type: 'string' } }, required: ['query'] }) },
-    { name: 'WebFetch', description: 'Extract content from web pages.', category: 'search', permissionMode: 'open', inputSchema: JSON.stringify({ type: 'object', properties: { url: { type: 'string' } }, required: ['url'] }) },
-    { name: 'Agent', description: 'Spawn sub-agents for parallel task execution.', category: 'agent', permissionMode: 'open', inputSchema: JSON.stringify({ type: 'object', properties: { task: { type: 'string' } }, required: ['task'] }) },
-    { name: 'TaskCreate', description: 'Create a new background task.', category: 'task', permissionMode: 'open', inputSchema: JSON.stringify({ type: 'object', properties: { title: { type: 'string' } }, required: ['title'] }) },
+    { name: 'Read', description: 'Read file contents from the local filesystem.', category: 'file', permissionMode: 'open', inputSchema: JSON.stringify({ type: 'object', properties: { path: { type: 'string' } }, required: ['path'] }) },
+    { name: 'Write', description: 'Write content to a file.', category: 'file', permissionMode: 'restricted', inputSchema: JSON.stringify({ type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] }) },
+    { name: 'Edit', description: 'Perform exact string replacements in existing files.', category: 'file', permissionMode: 'restricted', inputSchema: JSON.stringify({ type: 'object', properties: { path: { type: 'string' } }, required: ['path'] }) },
+    { name: 'Glob', description: 'Fast file pattern matching tool using glob patterns.', category: 'file', permissionMode: 'open', inputSchema: '{}' },
+    { name: 'Grep', description: 'Powerful search tool built on ripgrep with regex support.', category: 'file', permissionMode: 'open', inputSchema: '{}' },
+    { name: 'WebSearch', description: 'Search the web for real-time information.', category: 'search', permissionMode: 'open', inputSchema: '{}' },
+    { name: 'WebFetch', description: 'Extract content from web pages.', category: 'search', permissionMode: 'open', inputSchema: '{}' },
+    { name: 'Agent', description: 'Spawn sub-agents for parallel task execution.', category: 'agent', permissionMode: 'open', inputSchema: '{}' },
+    { name: 'TaskCreate', description: 'Create a new background task.', category: 'task', permissionMode: 'open', inputSchema: '{}' },
     { name: 'TaskList', description: 'List and filter background tasks.', category: 'task', permissionMode: 'open', inputSchema: '{}' },
-    { name: 'Skill', description: 'Load, invoke, or manage agent skills.', category: 'meta', permissionMode: 'open', inputSchema: JSON.stringify({ type: 'object', properties: { action: { type: 'string' } }, required: ['action'] }) },
-    { name: 'MCPTool', description: 'Execute a tool via Model Context Protocol.', category: 'mcp', permissionMode: 'sandboxed', inputSchema: JSON.stringify({ type: 'object', properties: { serverName: { type: 'string' }, toolName: { type: 'string' } }, required: ['serverName', 'toolName'] }) },
-    { name: 'Config', description: 'Read and update agent configuration.', category: 'meta', permissionMode: 'restricted', inputSchema: JSON.stringify({ type: 'object', properties: { key: { type: 'string' } }, required: ['key'] }) },
+    { name: 'Skill', description: 'Load, invoke, or manage agent skills.', category: 'meta', permissionMode: 'open', inputSchema: '{}' },
+    { name: 'MCPTool', description: 'Execute a tool via Model Context Protocol.', category: 'mcp', permissionMode: 'sandboxed', inputSchema: '{}' },
+    { name: 'Config', description: 'Read and update agent configuration.', category: 'meta', permissionMode: 'restricted', inputSchema: '{}' },
   ];
   for (const tool of tools) {
     await db.tool.upsert({

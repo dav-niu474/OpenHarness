@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/agents/[id] - Get a single agent by ID
 export async function GET(
@@ -7,6 +7,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    await ensureDatabase();
     const { id } = await params;
     const agent = await db.agent.findUnique({
       where: { id },
@@ -45,6 +46,7 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    await ensureDatabase();
     const { id } = await params;
     const body = await req.json();
     const { name, description, type, systemPrompt, provider, model, status, config } = body;
@@ -88,6 +90,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    await ensureDatabase();
     const { id } = await params;
 
     const existing = await db.agent.findUnique({ where: { id } });

@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/stats - Dashboard statistics
 export async function GET() {
   try {
+    await ensureDatabase();
     // Run all queries in parallel for performance
     const [
       activeAgents,

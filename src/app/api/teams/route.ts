@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, ensureDatabase } from '@/lib/db';
 
 // GET /api/teams - List all teams with members
 export async function GET() {
   try {
+    await ensureDatabase();
     const teams = await db.agentTeam.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
@@ -38,6 +39,7 @@ export async function GET() {
 // POST /api/teams - Create a new team
 export async function POST(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { name, description, config } = body;
 
@@ -72,6 +74,7 @@ export async function POST(req: NextRequest) {
 // PUT /api/teams - Update a team
 export async function PUT(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { id, name, description, config } = body;
 
@@ -115,6 +118,7 @@ export async function PUT(req: NextRequest) {
 // DELETE /api/teams - Delete a team
 export async function DELETE(req: NextRequest) {
   try {
+    await ensureDatabase();
     const body = await req.json();
     const { id } = body;
 
