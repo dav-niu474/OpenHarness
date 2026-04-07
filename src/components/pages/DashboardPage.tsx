@@ -486,12 +486,25 @@ function AgentFormDialog({
               <Label>Provider</Label>
               <Select
                 value={form.provider}
-                onValueChange={(val) => setForm((prev) => ({ ...prev, provider: val }))}
+                onValueChange={(val) => {
+                  setForm((prev) => ({ ...prev, provider: val }));
+                  // Auto-set model when provider changes
+                  if (val === 'nvidia') setForm((prev) => ({ ...prev, model: 'glm-4.7' }));
+                  else if (val === 'openai') setForm((prev) => ({ ...prev, model: 'gpt-4' }));
+                  else if (val === 'anthropic') setForm((prev) => ({ ...prev, model: 'claude-3' }));
+                  else setForm((prev) => ({ ...prev, model: 'local-model' }));
+                }}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="nvidia">
+                    <span className="flex items-center gap-2">
+                      NVIDIA NIM
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-amber-50 text-amber-600 border-amber-200">推荐</Badge>
+                    </span>
+                  </SelectItem>
                   <SelectItem value="openai">OpenAI</SelectItem>
                   <SelectItem value="anthropic">Anthropic</SelectItem>
                   <SelectItem value="local">Local</SelectItem>
@@ -500,12 +513,34 @@ function AgentFormDialog({
             </div>
             <div className="space-y-2">
               <Label htmlFor="agent-model">Model</Label>
-              <Input
-                id="agent-model"
-                placeholder="gpt-4"
-                value={form.model}
-                onChange={(e) => setForm((prev) => ({ ...prev, model: e.target.value }))}
-              />
+              {form.provider === 'nvidia' ? (
+                <Select
+                  value={form.model}
+                  onValueChange={(val) => setForm((prev) => ({ ...prev, model: val }))}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="glm-4.7">
+                      <span className="flex items-center gap-2">GLM 4.7 <span className="text-muted-foreground text-xs">— 中文理解 + 代码</span></span>
+                    </SelectItem>
+                    <SelectItem value="glm-5">
+                      <span className="flex items-center gap-2">GLM 5 <span className="text-muted-foreground text-xs">— 最新推理</span></span>
+                    </SelectItem>
+                    <SelectItem value="kimi-2.5">
+                      <span className="flex items-center gap-2">Kimi 2.5 <span className="text-muted-foreground text-xs">— 长上下文</span></span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id="agent-model"
+                  placeholder={form.provider === 'openai' ? 'gpt-4' : form.provider === 'anthropic' ? 'claude-3' : 'model-name'}
+                  value={form.model}
+                  onChange={(e) => setForm((prev) => ({ ...prev, model: e.target.value }))}
+                />
+              )}
             </div>
           </div>
 

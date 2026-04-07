@@ -1,12 +1,12 @@
 import { NextRequest } from 'next/server';
-import ZAI from 'z-ai-web-dev-sdk';
 import { db } from '@/lib/db';
+import { chatStream, getModelInfo, type LLMMessage } from '@/lib/llm';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
-    const { agentId, message, conversationId } = await req.json();
+    const { agentId, message, conversationId, modelId } = await req.json();
 
     if (!message || typeof message !== 'string') {
       return new Response(
@@ -15,10 +15,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ── Build messages array ────────────────────────────────────
-    const messages: Array<{ role: string; content: string }> = [];
-
-    // Load system prompt from agent or use default
+    // Determine model
+    let effectiveModelId = modelId || 'default';
     let systemPrompt =
       'You are an AI agent powered by OpenHarness. You are a helpful coding assistant with access to tools like file operations, web search, and code analysis. Respond concisely and helpfully. Use markdown formatting when appropriate.';
 
@@ -26,12 +24,21 @@ export async function POST(req: NextRequest) {
       const agent = await db.agent.findUnique({ where: { id: agentId } });
       if (agent) {
         systemPrompt = agent.systemPrompt || systemPrompt;
+        // Use agent's configured model if no explicit modelId is provided
+        if (!modelId && agent.provider && agent.model) {
+          // Check if agent's provider/model maps to a known model
+          if (agent.provider === 'nvidia') {
+            effectiveModelId = agent.model;
+          }
+        }
       }
     }
 
-    messages.push({ role: 'system', content: systemPrompt });
+    const modelInfo = getModelInfo(effectiveModelId);
 
-    // Load conversation history
+    // ── Build messages array ────────────────────────────────────
+    const messages: LLMMessage[] = [{ role: 'system', content: systemPrompt }];
+
     if (conversationId) {
       const conversation = await db.conversation.findUnique({
         where: { id: conversationId },
@@ -46,36 +53,23 @@ export async function POST(req: NextRequest) {
       if (conversation) {
         for (const msg of conversation.messages) {
           if (msg.role !== 'system' && msg.content) {
-            messages.push({ role: msg.role, content: msg.content });
+            messages.push({ role: msg.role as LLMMessage['role'], content: msg.content });
           }
         }
       }
     }
 
-    // Add the new user message
     messages.push({ role: 'user', content: message });
 
-    // Save user message to DB if conversationId is provided
+    // Save user message to DB
     if (conversationId) {
       await db.message.create({
-        data: {
-          conversationId,
-          role: 'user',
-          content: message,
-        },
+        data: { conversationId, role: 'user', content: message },
       });
     }
 
-    // ── Create streaming completion via z-ai-web-dev-sdk ────────
-    const zai = await ZAI.create();
-    const sdkStream = await zai.chat.completions.create({
-      messages: messages.map((m) => ({
-        role: m.role as 'system' | 'user' | 'assistant',
-        content: m.content,
-      })),
-      stream: true,
-      thinking: { type: 'disabled' },
-    });
+    // ── Create streaming completion ─────────────────────────────
+    const providerStream = await chatStream(messages, effectiveModelId);
 
     // ── Build SSE ReadableStream ────────────────────────────────
     const encoder = new TextEncoder();
@@ -86,8 +80,7 @@ export async function POST(req: NextRequest) {
 
     const readable = new ReadableStream({
       async start(controller) {
-        // Get a reader from the SDK stream (it's a native ReadableStream)
-        const reader = (sdkStream as unknown as ReadableStream<Uint8Array>).getReader();
+        const reader = providerStream.getReader();
         let buffer = '';
 
         try {
@@ -95,19 +88,14 @@ export async function POST(req: NextRequest) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            // Decode the chunk and append to buffer
             buffer += decoder.decode(value, { stream: true });
 
-            // Process complete SSE lines from the buffer
             const lines = buffer.split('\n');
-            // Keep the last potentially incomplete line in the buffer
             buffer = lines.pop() ?? '';
 
             for (const line of lines) {
               const trimmed = line.trim();
               if (!trimmed) continue;
-
-              // Handle stream termination signal
               if (trimmed === 'data: [DONE]') continue;
 
               if (trimmed.startsWith('data: ')) {
@@ -116,15 +104,12 @@ export async function POST(req: NextRequest) {
                   const content = json.choices?.[0]?.delta?.content;
                   if (content) {
                     fullContent += content;
-                    // Send content chunk as SSE
                     controller.enqueue(
                       encoder.encode(
-                        `data: ${JSON.stringify({ content })}\n\n`
+                        `data: ${JSON.stringify({ content, model: modelInfo.name })}\n\n`
                       )
                     );
                   }
-
-                  // Capture usage data from the final chunk (if present)
                   if (json.usage) {
                     usageData = json.usage;
                   }
@@ -135,7 +120,7 @@ export async function POST(req: NextRequest) {
             }
           }
 
-          // Process any remaining buffer
+          // Process remaining buffer
           if (buffer.trim()) {
             const trimmed = buffer.trim();
             if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
@@ -145,7 +130,7 @@ export async function POST(req: NextRequest) {
                 if (content) {
                   fullContent += content;
                   controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify({ content })}\n\n`)
+                    encoder.encode(`data: ${JSON.stringify({ content, model: modelInfo.name })}\n\n`)
                   );
                 }
                 if (json.usage) {
@@ -157,24 +142,27 @@ export async function POST(req: NextRequest) {
             }
           }
 
-          // Send final done event with usage
+          // Send final done event with usage and model info
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ done: true, usage: usageData })}\n\n`
+              `data: ${JSON.stringify({
+                done: true,
+                usage: usageData,
+                model: modelInfo.name,
+                modelId: modelInfo.id,
+                provider: modelInfo.provider,
+              })}\n\n`
             )
           );
         } catch (error) {
-          // Send error event then close
           controller.enqueue(
             encoder.encode(
               `data: ${JSON.stringify({ done: true, error: String(error) })}\n\n`
             )
           );
         } finally {
-          // Release the reader lock
           reader.releaseLock();
 
-          // Save the full assistant reply to DB
           if (conversationId && fullContent) {
             try {
               await db.message.create({
@@ -182,6 +170,7 @@ export async function POST(req: NextRequest) {
                   conversationId,
                   role: 'assistant',
                   content: fullContent,
+                  tokenCount: usageData?.total_tokens,
                 },
               });
             } catch (dbError) {
@@ -194,7 +183,6 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Return SSE response
     return new Response(readable, {
       headers: {
         'Content-Type': 'text/event-stream',

@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   Copy,
   Check,
+  Cpu,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,6 +35,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+
+// ── Model Options ─────────────────────────────────────────────
+
+interface ModelOption {
+  id: string;
+  name: string;
+  provider: string;
+  description: string;
+}
+
+const MODEL_OPTIONS: ModelOption[] = [
+  { id: 'default', name: 'Default (z-ai-sdk)', provider: 'zai', description: 'Default AI model' },
+  { id: 'glm-4.7', name: 'GLM 4.7', provider: 'nvidia', description: 'Zhipu AI — 中文理解和代码生成' },
+  { id: 'glm-5', name: 'GLM 5', provider: 'nvidia', description: 'Zhipu AI — 最新一代推理' },
+  { id: 'kimi-2.5', name: 'Kimi 2.5', provider: 'nvidia', description: 'Moonshot AI — 长上下文' },
+];
 
 // ── Agent Options ──────────────────────────────────────────────
 
@@ -663,6 +680,7 @@ function AgentLoopStatusBar({ status, tokenCount, messageCount }: { status: 'idl
 
 export default function PlaygroundPage() {
   const [selectedAgent, setSelectedAgent] = useState('alpha');
+  const [selectedModel, setSelectedModel] = useState('glm-4.7');
   const [conversations, setConversations] = useState<ConversationItem[]>(() => [
     {
       id: 'conv-default',
@@ -688,6 +706,7 @@ export default function PlaygroundPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const currentModel = MODEL_OPTIONS.find((m) => m.id === selectedModel);
   const currentAgent = AGENT_OPTIONS.find((a) => a.id === selectedAgent);
   const activeConversation = conversations.find((c) => c.id === activeConvId);
   const messages = activeConversation?.messages ?? [];
@@ -778,6 +797,7 @@ export default function PlaygroundPage() {
           message: trimmedInput,
           agentId: selectedAgent,
           conversationId: convId,
+          modelId: selectedModel,
         }),
         signal: abortController.signal,
       });
@@ -1049,6 +1069,35 @@ export default function PlaygroundPage() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {/* Model Selector */}
+                <Select value={selectedModel} onValueChange={setSelectedModel}>
+                  <SelectTrigger className="w-[150px] h-7 text-[11px] border-muted-foreground/30">
+                    <Cpu className="w-3 h-3 mr-1 text-muted-foreground" />
+                    <SelectValue placeholder="Select model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MODEL_OPTIONS.map((model) => (
+                      <SelectItem key={model.id} value={model.id} className="text-xs">
+                        <div className="flex flex-col gap-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{model.name}</span>
+                            <Badge
+                              variant="outline"
+                              className={`text-[9px] px-1 py-0 ${
+                                model.provider === 'nvidia'
+                                  ? 'bg-amber-50 text-amber-600 border-amber-200'
+                                  : 'bg-muted text-muted-foreground'
+                              }`}
+                            >
+                              {model.provider === 'nvidia' ? 'NVIDIA' : 'Default'}
+                            </Badge>
+                          </div>
+                          <span className="text-[10px] text-muted-foreground">{model.description}</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Badge variant="outline" className="text-[10px] h-5 font-mono">
                   {tokenCount.toLocaleString()} tokens
                 </Badge>
