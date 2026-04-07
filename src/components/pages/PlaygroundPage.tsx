@@ -14,6 +14,9 @@ import {
   CircleDot,
   Sparkles,
   Loader2,
+  AlertTriangle,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -64,6 +67,7 @@ interface ChatMessage {
   content: string;
   toolCall?: ToolCall;
   timestamp?: string;
+  isStreaming?: boolean;
 }
 
 interface ConversationItem {
@@ -223,6 +227,331 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
   );
 }
 
+// ── Code Block with Copy Button ──────────────────────────────
+
+function CodeBlock({ code, language }: { code: string; language: string }) {
+  const [copied, setCopied] = React.useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API not available
+    }
+  };
+
+  return (
+    <div className="relative group my-2 rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-zinc-800 border-b border-zinc-700/50">
+        {language && (
+          <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
+            {language}
+          </span>
+        )}
+        {!language && <span />}
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors px-2 py-1 rounded hover:bg-zinc-700/50"
+        >
+          {copied ? (
+            <>
+              <Check className="w-3 h-3 text-emerald-400" />
+              <span className="text-emerald-400">Copied!</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3 h-3" />
+              <span>Copy</span>
+            </>
+          )}
+        </button>
+      </div>
+      <pre className="bg-zinc-900 text-zinc-100 p-4 overflow-x-auto">
+        <code className="text-[13px] leading-relaxed font-mono whitespace-pre">
+          {code}
+        </code>
+      </pre>
+    </div>
+  );
+}
+
+// ── Inline Markdown Renderer ──────────────────────────────────
+
+function renderInline(text: string): React.ReactNode {
+  const tokens: React.ReactNode[] = [];
+  let remaining = text;
+  let keyIdx = 0;
+
+  while (remaining.length > 0) {
+    // Find the earliest match among all inline patterns
+    let earliestIndex = remaining.length;
+    let matchType: 'code' | 'link' | 'bold' | 'italic' | null = null;
+    let matchResult: RegExpMatchArray | null = null;
+
+    // Inline code: `text` — scan for first backtick
+    const codeSearch = remaining.indexOf('`');
+    if (codeSearch !== -1 && codeSearch < earliestIndex) {
+      const codeMatch = remaining.slice(codeSearch).match(/^`([^`]+)`/);
+      if (codeMatch) {
+        earliestIndex = codeSearch;
+        matchType = 'code';
+        matchResult = codeMatch;
+      }
+    }
+
+    // Link: [text](url) — scan for first [
+    const linkSearch = remaining.indexOf('[');
+    if (linkSearch !== -1 && linkSearch < earliestIndex) {
+      const linkMatch = remaining.slice(linkSearch).match(/^\[([^\]]+)\]\(([^)]+)\)/);
+      if (linkMatch) {
+        earliestIndex = linkSearch;
+        matchType = 'link';
+        matchResult = linkMatch;
+      }
+    }
+
+    // Bold: **text** — scan for first **
+    const boldSearch = remaining.indexOf('**');
+    if (boldSearch !== -1 && boldSearch < earliestIndex) {
+      const boldMatch = remaining.slice(boldSearch).match(/^\*\*(.+?)\*\*/s);
+      if (boldMatch) {
+        earliestIndex = boldSearch;
+        matchType = 'bold';
+        matchResult = boldMatch;
+      }
+    }
+
+    // Italic: *text* — scan for single * (not preceded by *)
+    const italicSearch = remaining.search(/(?<!\*)\*(?!\*)/);
+    if (italicSearch !== -1 && italicSearch < earliestIndex) {
+      const italicMatch = remaining.slice(italicSearch).match(/^\*(?!\*)(.+?)\*(?!\*)/s);
+      if (italicMatch) {
+        earliestIndex = italicSearch;
+        matchType = 'italic';
+        matchResult = italicMatch;
+      }
+    }
+
+    if (matchType === null || !matchResult) {
+      // No more patterns found — push remaining text as plain
+      if (remaining.length > 0) {
+        tokens.push(remaining);
+      }
+      break;
+    }
+
+    // Push plain text before the match
+    if (earliestIndex > 0) {
+      tokens.push(remaining.slice(0, earliestIndex));
+    }
+
+    // Process the matched pattern
+    switch (matchType) {
+      case 'code':
+        tokens.push(
+          <code
+            key={`ic-${keyIdx++}`}
+            className="bg-muted px-1.5 py-0.5 rounded text-[13px] font-mono text-foreground"
+          >
+            {matchResult[1]}
+          </code>
+        );
+        remaining = remaining.slice(earliestIndex + matchResult[0].length);
+        break;
+      case 'link':
+        tokens.push(
+          <a
+            key={`link-${keyIdx++}`}
+            href={matchResult[2]}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-emerald-600 hover:text-emerald-700 underline underline-offset-2"
+          >
+            {matchResult[1]}
+          </a>
+        );
+        remaining = remaining.slice(earliestIndex + matchResult[0].length);
+        break;
+      case 'bold':
+        tokens.push(
+          <strong key={`b-${keyIdx++}`} className="font-semibold">
+            {renderInline(matchResult[1])}
+          </strong>
+        );
+        remaining = remaining.slice(earliestIndex + matchResult[0].length);
+        break;
+      case 'italic':
+        tokens.push(
+          <em key={`i-${keyIdx++}`}>{renderInline(matchResult[1])}</em>
+        );
+        remaining = remaining.slice(earliestIndex + matchResult[0].length);
+        break;
+    }
+  }
+
+  return tokens.length === 0 ? null : tokens.length === 1 ? tokens[0] : <>{tokens}</>;
+}
+
+// ── Rich Markdown Renderer ────────────────────────────────────
+
+function renderMarkdown(text: string): React.ReactNode {
+  // Step 1: Extract fenced code blocks and replace with placeholders
+  const codeBlocks: { code: string; language: string }[] = [];
+  const CODE_PLACEHOLDER = '\x00CODEBLOCK_';
+
+  let processed = text.replace(
+    /```(\w*)\n([\s\S]*?)```/g,
+    (_match, lang, code) => {
+      const idx = codeBlocks.length;
+      codeBlocks.push({ code: code.replace(/\n$/, ''), language: lang });
+      return `${CODE_PLACEHOLDER}${idx}\x00`;
+    }
+  );
+
+  // Step 2: Split into lines and process block elements
+  const lines = processed.split('\n');
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+  let keyIdx = 0;
+
+  // Helper: check if line is inside a code placeholder
+  const isCodePlaceholder = (line: string): { isCode: boolean; idx: number } => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(CODE_PLACEHOLDER) && trimmed.endsWith('\x00')) {
+      const idx = parseInt(trimmed.slice(CODE_PLACEHOLDER.length, -1), 10);
+      return { isCode: !isNaN(idx), idx };
+    }
+    return { isCode: false, idx: -1 };
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Empty line
+    if (trimmed === '') {
+      i++;
+      continue;
+    }
+
+    // Code block placeholder
+    const codeCheck = isCodePlaceholder(trimmed);
+    if (codeCheck.isCode && codeBlocks[codeCheck.idx]) {
+      const block = codeBlocks[codeCheck.idx];
+      elements.push(
+        <CodeBlock key={`cb-${keyIdx++}`} code={block.code} language={block.language} />
+      );
+      i++;
+      continue;
+    }
+
+    // Horizontal rule: ---
+    if (/^-{3,}$/.test(trimmed)) {
+      elements.push(
+        <hr key={`hr-${keyIdx++}`} className="my-3 border-muted-border" />
+      );
+      i++;
+      continue;
+    }
+
+    // H3: ### text
+    if (/^###\s/.test(trimmed)) {
+      elements.push(
+        <h3
+          key={`h3-${keyIdx++}`}
+          className="text-[15px] font-semibold mt-4 mb-1.5 text-foreground"
+        >
+          {renderInline(trimmed.slice(4))}
+        </h3>
+      );
+      i++;
+      continue;
+    }
+
+    // H2: ## text
+    if (/^##\s/.test(trimmed)) {
+      elements.push(
+        <h2
+          key={`h2-${keyIdx++}`}
+          className="text-base font-bold mt-4 mb-1.5 text-foreground"
+        >
+          {renderInline(trimmed.slice(3))}
+        </h2>
+      );
+      i++;
+      continue;
+    }
+
+    // Unordered list: - item
+    if (/^[-*]\s/.test(trimmed)) {
+      const listItems: React.ReactNode[] = [];
+      while (i < lines.length && /^[-*]\s/.test(lines[i].trim())) {
+        listItems.push(
+          <li key={`li-${keyIdx++}`} className="ml-4 list-disc py-0.5">
+            {renderInline(lines[i].trim().slice(2))}
+          </li>
+        );
+        i++;
+      }
+      elements.push(
+        <ul key={`ul-${keyIdx++}`} className="my-1.5 space-y-0.5">
+          {listItems}
+        </ul>
+      );
+      continue;
+    }
+
+    // Ordered list: 1. item
+    if (/^\d+\.\s/.test(trimmed)) {
+      const listItems: React.ReactNode[] = [];
+      while (i < lines.length && /^\d+\.\s/.test(lines[i].trim())) {
+        listItems.push(
+          <li key={`oli-${keyIdx++}`} className="ml-4 list-decimal py-0.5">
+            {renderInline(lines[i].trim().replace(/^\d+\.\s/, ''))}
+          </li>
+        );
+        i++;
+      }
+      elements.push(
+        <ol key={`ol-${keyIdx++}`} className="my-1.5 space-y-0.5">
+          {listItems}
+        </ol>
+      );
+      continue;
+    }
+
+    // Regular paragraph: collect consecutive non-empty lines
+    const paragraphLines: string[] = [];
+    while (i < lines.length) {
+      const pLine = lines[i];
+      const pTrimmed = pLine.trim();
+
+      // Stop at empty lines or special block elements
+      if (pTrimmed === '') break;
+      if (isCodePlaceholder(pTrimmed).isCode) break;
+      if (/^-{3,}$/.test(pTrimmed)) break;
+      if (/^#{2,3}\s/.test(pTrimmed)) break;
+      if (/^[-*]\s/.test(pTrimmed)) break;
+      if (/^\d+\.\s/.test(pTrimmed)) break;
+
+      paragraphLines.push(pTrimmed);
+      i++;
+    }
+
+    if (paragraphLines.length > 0) {
+      elements.push(
+        <p key={`p-${keyIdx++}`} className="my-1">
+          {renderInline(paragraphLines.join(' '))}
+        </p>
+      );
+    }
+  }
+
+  return <>{elements}</>;
+}
+
 // ── Chat Message Bubble ────────────────────────────────────────
 
 function ChatBubble({ message }: { message: ChatMessage }) {
@@ -235,6 +564,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   }
 
   const isUser = message.role === 'user';
+  const isStreaming = message.isStreaming;
 
   return (
     <div
@@ -267,22 +597,22 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           }
         `}
       >
-        {message.content.split('\n').map((line, i) => {
-          const parts = line.split(/(\*\*[^*]+\*\*)/g);
-          return (
-            <React.Fragment key={i}>
-              {parts.map((part, j) => {
-                if (part.startsWith('**') && part.endsWith('**')) {
-                  return (
-                    <strong key={j}>{part.slice(2, -2)}</strong>
-                  );
-                }
-                return <span key={j}>{part}</span>;
-              })}
-              {i < message.content.split('\n').length - 1 && <br />}
+        {isUser ? (
+          // User messages: plain text with line breaks
+          message.content.split('\n').map((line, idx) => (
+            <React.Fragment key={idx}>
+              {line}
+              {idx < message.content.split('\n').length - 1 && <br />}
             </React.Fragment>
-          );
-        })}
+          ))
+        ) : (
+          // Assistant messages: rich markdown rendering
+          renderMarkdown(message.content)
+        )}
+        {/* Blinking cursor while streaming */}
+        {isStreaming && (
+          <span className="inline-block w-[2px] h-[16px] bg-emerald-500 ml-0.5 align-text-bottom animate-pulse rounded-full" />
+        )}
       </div>
     </div>
   );
@@ -353,6 +683,8 @@ export default function PlaygroundPage() {
   const [inputValue, setInputValue] = useState('');
   const [loopStatus, setLoopStatus] = useState<'idle' | 'thinking' | 'executing'>('idle');
   const [tokenCount, setTokenCount] = useState(0);
+  const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -373,12 +705,13 @@ export default function PlaygroundPage() {
     return newConv.id;
   }, [selectedAgent]);
 
+  // Auto-scroll to bottom when messages change or streaming content updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, messages[messages.length - 1]?.id]);
+  }, [messages.length, messages[messages.length - 1]?.content, streamingMsgId]);
 
   const handleSend = async () => {
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() || loopStatus !== 'idle') return;
 
     const userMessage: ChatMessage = {
       id: `msg-${Date.now()}`,
@@ -394,7 +727,7 @@ export default function PlaygroundPage() {
 
     const trimmedInput = inputValue.trim();
 
-    // Add user message
+    // Add user message to conversation
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id !== convId) return c;
@@ -402,16 +735,43 @@ export default function PlaygroundPage() {
         return {
           ...c,
           messages: updatedMessages,
-          title: c.messages.length <= 1 ? trimmedInput.slice(0, 40) + (trimmedInput.length > 40 ? '...' : '') : c.title,
+          title:
+            c.messages.length <= 1
+              ? trimmedInput.slice(0, 40) + (trimmedInput.length > 40 ? '...' : '')
+              : c.title,
         };
-      })
+      }),
     );
 
     setInputValue('');
     setLoopStatus('thinking');
 
+    // Create a placeholder assistant message for streaming
+    const assistantMsgId = `msg-${Date.now()}-resp`;
+    const assistantMessage: ChatMessage = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+      isStreaming: true,
+    };
+
+    // Add the empty streaming message
+    setConversations((prev) =>
+      prev.map((c) => {
+        if (c.id !== convId) return c;
+        return { ...c, messages: [...c.messages, assistantMessage] };
+      }),
+    );
+
+    setStreamingMsgId(assistantMsgId);
+
+    // Create abort controller for this request
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     try {
-      const res = await fetch('/api/agent/chat', {
+      const res = await fetch('/api/agent/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -419,59 +779,217 @@ export default function PlaygroundPage() {
           agentId: selectedAgent,
           conversationId: convId,
         }),
+        signal: abortController.signal,
       });
 
-      const data = await res.json();
-
-      if (data.success) {
-        setLoopStatus('executing');
-        setTimeout(() => {
-          const assistantMessage: ChatMessage = {
-            id: `msg-${Date.now()}-resp`,
-            role: 'assistant',
-            content: data.reply,
-            timestamp: new Date().toISOString(),
-          };
-
-          setConversations((prev) =>
-            prev.map((c) => {
-              if (c.id !== convId) return c;
-              return { ...c, messages: [...c.messages, assistantMessage] };
-            })
-          );
-
-          setTokenCount(data.usage?.total_tokens ?? tokenCount + Math.floor(Math.random() * 200 + 100));
-          setLoopStatus('idle');
-        }, 500);
-      } else {
-        const errorMessage: ChatMessage = {
-          id: `msg-${Date.now()}-err`,
-          role: 'assistant',
-          content: `Sorry, an error occurred: ${data.error || 'Unknown error'}. Please try again.`,
-          timestamp: new Date().toISOString(),
-        };
-        setConversations((prev) =>
-          prev.map((c) => {
-            if (c.id !== convId) return c;
-            return { ...c, messages: [...c.messages, errorMessage] };
-          })
-        );
-        setLoopStatus('idle');
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
-    } catch {
-      const errorMessage: ChatMessage = {
-        id: `msg-${Date.now()}-err`,
-        role: 'assistant',
-        content: 'Network error. Please check your connection and try again.',
-        timestamp: new Date().toISOString(),
-      };
+
+      setLoopStatus('executing');
+
+      // Read the SSE stream
+      const reader = res.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE events from buffer
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+          try {
+            const json = JSON.parse(trimmed.slice(6));
+
+            if (json.content) {
+              // Update the streaming message with new content
+              const contentChunk = json.content;
+              setConversations((prev) =>
+                prev.map((c) => {
+                  if (c.id !== convId) return c;
+                  return {
+                    ...c,
+                    messages: c.messages.map((m) => {
+                      if (m.id !== assistantMsgId) return m;
+                      return {
+                        ...m,
+                        content: m.content + contentChunk,
+                        isStreaming: true,
+                      };
+                    }),
+                  };
+                }),
+              );
+            }
+
+            if (json.done) {
+              // Stream is complete
+              if (json.error) {
+                // Server-side error during streaming
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id !== convId) return c;
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) => {
+                        if (m.id !== assistantMsgId) return m;
+                        return {
+                          ...m,
+                          content:
+                            m.content ||
+                            `Sorry, an error occurred: ${json.error}. Please try again.`,
+                          isStreaming: false,
+                        };
+                      }),
+                    };
+                  }),
+                );
+              } else {
+                // Mark streaming as complete
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id !== convId) return c;
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) => {
+                        if (m.id !== assistantMsgId) return m;
+                        return { ...m, isStreaming: false };
+                      }),
+                    };
+                  }),
+                );
+
+                // Update token count from usage data
+                if (json.usage) {
+                  const total = json.usage.total_tokens;
+                  if (typeof total === 'number') {
+                    setTokenCount(total);
+                  } else {
+                    setTokenCount((prev) => prev + Math.floor(Math.random() * 200 + 100));
+                  }
+                } else {
+                  setTokenCount((prev) => prev + Math.floor(Math.random() * 200 + 100));
+                }
+              }
+            }
+          } catch {
+            // Not valid JSON — skip this line
+          }
+        }
+      }
+
+      // Process any remaining buffer
+      if (buffer.trim()) {
+        const trimmed = buffer.trim();
+        if (trimmed.startsWith('data: ')) {
+          try {
+            const json = JSON.parse(trimmed.slice(6));
+            if (json.content) {
+              setConversations((prev) =>
+                prev.map((c) => {
+                  if (c.id !== convId) return c;
+                  return {
+                    ...c,
+                    messages: c.messages.map((m) => {
+                      if (m.id !== assistantMsgId) return m;
+                      return { ...m, content: m.content + json.content };
+                    }),
+                  };
+                }),
+              );
+            }
+            if (json.done) {
+              setConversations((prev) =>
+                prev.map((c) => {
+                  if (c.id !== convId) return c;
+                  return {
+                    ...c,
+                    messages: c.messages.map((m) => {
+                      if (m.id !== assistantMsgId) return m;
+                      return { ...m, isStreaming: false };
+                    }),
+                  };
+                }),
+              );
+              if (json.usage) {
+                const total = json.usage.total_tokens;
+                if (typeof total === 'number') {
+                  setTokenCount(total);
+                } else {
+                  setTokenCount((prev) => prev + Math.floor(Math.random() * 200 + 100));
+                }
+              }
+            }
+          } catch {
+            // Not valid JSON — ignore
+          }
+        }
+      }
+
+      // Ensure streaming is marked as done even if no done event received
       setConversations((prev) =>
         prev.map((c) => {
           if (c.id !== convId) return c;
-          return { ...c, messages: [...c.messages, errorMessage] };
-        })
+          return {
+            ...c,
+            messages: c.messages.map((m) => {
+              if (m.id !== assistantMsgId) return m;
+              // If content is still empty, show error
+              if (!m.content) {
+                return {
+                  ...m,
+                  content: 'No response was received. Please try again.',
+                  isStreaming: false,
+                };
+              }
+              return { ...m, isStreaming: false };
+            }),
+          };
+        }),
       );
+    } catch (err) {
+      // Handle fetch errors (network, abort, etc.)
+      if (abortController.signal.aborted) {
+        // Request was aborted (e.g. component unmounted)
+        return;
+      }
+
+      const errorMsg =
+        err instanceof Error ? err.message : 'Unknown error occurred';
+
+      setConversations((prev) =>
+        prev.map((c) => {
+          if (c.id !== convId) return c;
+          return {
+            ...c,
+            messages: c.messages.map((m) => {
+              if (m.id !== assistantMsgId) return m;
+              return {
+                ...m,
+                content: m.content || `Network error: ${errorMsg}. Please try again.`,
+                isStreaming: false,
+              };
+            }),
+          };
+        }),
+      );
+    } finally {
       setLoopStatus('idle');
+      setStreamingMsgId(null);
+      abortControllerRef.current = null;
     }
   };
 
@@ -481,6 +999,9 @@ export default function PlaygroundPage() {
       handleSend();
     }
   };
+
+  // Check if any message is currently streaming
+  const isAnyStreaming = messages.some((m) => m.isStreaming);
 
   return (
     <div className="flex h-[calc(100vh-57px)]">
@@ -521,7 +1042,9 @@ export default function PlaygroundPage() {
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
                       <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
                     </span>
-                    <span className="text-[11px] text-muted-foreground">Online</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {isAnyStreaming ? 'Streaming...' : 'Online'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -540,19 +1063,26 @@ export default function PlaygroundPage() {
               <div className="flex flex-col gap-4 p-5 max-w-3xl mx-auto w-full">
                 {messages.length === 0 && (
                   <div className="flex flex-col items-center justify-center py-20 text-center">
-                    <div className={`w-16 h-16 rounded-2xl ${currentAgent?.color ?? 'bg-emerald-500'} flex items-center justify-center mb-4`}>
+                    <div
+                      className={`w-16 h-16 rounded-2xl ${currentAgent?.color ?? 'bg-emerald-500'} flex items-center justify-center mb-4`}
+                    >
                       <Bot className="w-8 h-8 text-white" />
                     </div>
-                    <h3 className="text-lg font-semibold mb-1">{currentAgent?.name ?? 'Agent'}</h3>
+                    <h3 className="text-lg font-semibold mb-1">
+                      {currentAgent?.name ?? 'Agent'}
+                    </h3>
                     <p className="text-sm text-muted-foreground max-w-sm">
                       {currentAgent?.description ?? 'AI assistant ready to help'}
                     </p>
                   </div>
                 )}
+
                 {messages.map((msg) => (
                   <ChatBubble key={msg.id} message={msg} />
                 ))}
-                {loopStatus === 'thinking' && (
+
+                {/* Thinking indicator (before streaming starts) */}
+                {loopStatus === 'thinking' && !isAnyStreaming && (
                   <div className="flex gap-2.5 max-w-[85%]">
                     <div className="flex items-center justify-center w-7 h-7 rounded-full shrink-0 mt-0.5 bg-muted text-muted-foreground">
                       <Bot className="w-3.5 h-3.5" />
@@ -560,24 +1090,14 @@ export default function PlaygroundPage() {
                     <div className="rounded-xl rounded-tl-sm bg-muted px-4 py-3">
                       <div className="flex items-center gap-2">
                         <Loader2 className="w-4 h-4 animate-spin text-emerald-500" />
-                        <span className="text-sm text-muted-foreground">Thinking...</span>
+                        <span className="text-sm text-muted-foreground">
+                          Thinking...
+                        </span>
                       </div>
                     </div>
                   </div>
                 )}
-                {loopStatus === 'executing' && (
-                  <div className="flex gap-2.5 max-w-[85%]">
-                    <div className="flex items-center justify-center w-7 h-7 rounded-full shrink-0 mt-0.5 bg-muted text-muted-foreground">
-                      <Bot className="w-3.5 h-3.5" />
-                    </div>
-                    <div className="rounded-xl rounded-tl-sm bg-muted px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <CircleDot className="w-4 h-4 animate-pulse text-cyan-500" />
-                        <span className="text-sm text-muted-foreground">Processing response...</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
+
                 <div ref={messagesEndRef} />
               </div>
             </ScrollArea>
@@ -617,11 +1137,16 @@ export default function PlaygroundPage() {
                     disabled={!inputValue.trim() || loopStatus !== 'idle'}
                     className="w-8 h-8 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shrink-0 disabled:opacity-30 mb-0.5"
                   >
-                    <Send className="w-4 h-4" />
+                    {loopStatus !== 'idle' ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Send className="w-4 h-4" />
+                    )}
                   </Button>
                 </div>
                 <p className="text-[10px] text-muted-foreground/50 text-center mt-2">
-                  Press Enter to send, Shift+Enter for new line. Use / for commands.
+                  Press Enter to send, Shift+Enter for new line. Use / for
+                  commands.
                 </p>
               </div>
             </div>

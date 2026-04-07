@@ -470,8 +470,62 @@ Successfully rewrote the DashboardPage component to replace all static mock data
 - Preserved Architecture Overview and Agent Loop Flow sections (static, as they describe system design)
 - Consistent emerald accent color scheme throughout; no blue or indigo colors
 
-**Files modified:**
-- `src/components/pages/DashboardPage.tsx` (completely rewritten)
+---
+
+## Task ID: 3-a - full-stack-developer
+### Work Task
+Add SSE streaming support to AI chat API and update Playground page to use real-time streaming.
+
+### Work Summary
+Successfully implemented SSE (Server-Sent Events) streaming for the AI chat system. Both the backend streaming API and the frontend Playground page were created/updated. All changes compile cleanly with zero lint errors and the dev server confirms the streaming endpoint returns 200 OK with proper SSE format.
+
+**1. Streaming Chat API (`src/app/api/agent/chat/stream/route.ts`) — New**
+
+Created a new API route at `/api/agent/chat/stream` that provides SSE streaming:
+
+- **POST endpoint** accepting `{ agentId, message, conversationId }`
+- **z-ai-web-dev-sdk streaming**: Calls `zai.chat.completions.create()` with `stream: true` and `thinking: { type: 'disabled' }`
+- **SSE format**: Returns `text/event-stream` response with properly formatted SSE events:
+  - Content chunks: `data: {"content": "..."}\n\n`
+  - Done event: `data: {"done": true, "usage": {...}}\n\n`
+  - Error event: `data: {"done": true, "error": "..."}\n\n`
+- **ReadableStream pipeline**: Reads chunks from the SDK's native ReadableStream, parses the internal SSE format (data lines with JSON payloads), extracts `choices[0].delta.content` from each chunk, and re-emits as our own SSE format
+- **Buffer management**: Maintains a line buffer to handle chunks that may split across SSE event boundaries
+- **Database persistence**: Saves user message immediately on request, saves full assistant reply in the `finally` block after stream completes (ensures message is saved even on errors)
+- **Agent system prompt loading**: Same logic as non-streaming endpoint — loads agent's systemPrompt from DB when agentId is provided
+- **Conversation history**: Loads full message history from DB when conversationId is provided
+- **Force dynamic**: Uses `export const dynamic = 'force-dynamic'` to ensure the route is never statically cached
+- **Error handling**: Try/catch at top level with proper HTTP status codes (400, 500) and JSON error responses
+
+**2. Playground Page (`src/components/pages/PlaygroundPage.tsx`) — Updated**
+
+Rewrote the chat interaction to use real-time SSE streaming:
+
+- **Streaming fetch**: Uses `fetch()` with `/api/agent/chat/stream` endpoint and reads `response.body` as a `ReadableStream` via `getReader()`
+- **SSE parsing**: Decodes chunks with `TextDecoder`, splits by newlines, parses `data:` lines as JSON
+- **Real-time message display**: Creates an empty assistant message placeholder with `isStreaming: true`, then appends content chunks as they arrive — the message text appears character by character in real-time
+- **Blinking cursor**: Added a CSS-animated emerald blinking cursor (`animate-pulse` on a 2px wide inline element) that appears at the end of the message while `isStreaming` is true
+- **Auto-scroll**: useEffect triggers smooth scroll to bottom on both message count changes AND streaming content updates (tracked via `messages[messages.length - 1]?.content`)
+- **Loop status management**: `thinking` state shows "Thinking..." indicator while waiting for first chunk, transitions to `executing` once stream starts, returns to `idle` on completion
+- **Token count**: Updates from the `usage.total_tokens` field in the `done` SSE event, with fallback to estimated random count if not available
+- **AbortController**: Stores reference to `AbortController` for potential future cancellation support; checks `signal.aborted` in error handler to avoid stale state updates
+- **Error handling**: Catches network errors, HTTP errors (non-200), and server-side stream errors; displays error messages inline in the chat as assistant messages
+- **Empty response guard**: If the stream completes with no content, shows "No response was received" message
+- **Send button**: Shows spinning `Loader2` icon when not idle (instead of `Send` icon)
+- **Header status**: Shows "Streaming..." text when any message has `isStreaming: true`, otherwise "Online"
+- **Extracted `RenderContent` component**: Extracted the markdown-like text renderer into a reusable component used by `ChatBubble`
+- **Removed**: `executing` status indicator (the "Processing..." bubble is no longer shown during streaming since the message itself shows real-time content with cursor)
+
+**3. Verification**
+- Lint passes with zero errors
+- Streaming endpoint tested with curl: returns proper SSE events with content chunks and `done` event with usage data
+- Dev server compiles streaming route successfully (POST /api/agent/chat/stream 200 in ~400-1700ms)
+- Main page returns 200 OK
+- All existing functionality preserved (conversation management, agent switching, etc.)
+
+**Files created/modified:**
+- `src/app/api/agent/chat/stream/route.ts` (new)
+- `src/components/pages/PlaygroundPage.tsx` (updated with SSE streaming)
 
 ---
 
@@ -606,3 +660,68 @@ Complete rewrite with full CRUD integration:
 - `src/components/pages/SwarmPage.tsx` (completely rewritten with live API integration)
 - `src/components/pages/MemoryPage.tsx` (completely rewritten with live API integration)
 - `src/components/pages/TasksPage.tsx` (completely rewritten with full CRUD API integration)
+
+---
+
+## Task ID: 3-c - full-stack-developer
+### Work Task
+Add Agent CRUD dialogs and auto-refresh to Dashboard
+
+Work Log:
+- Added Create Agent Dialog with full form: Name, Description, Type (select), Status (select), Provider (select), Model, System Prompt, Temperature (slider 0-1 step 0.1), Max Tokens (number input)
+- Added Edit Agent Dialog that pre-fills all fields from agent data and parses config JSON for temperature/maxTokens
+- Added Delete Agent confirmation via AlertDialog with destructive button styling
+- Added Create Agent button to Registered Agents card header alongside Open Playground
+- Agent cards are now clickable (opens Edit dialog) with hover-revealed edit/delete action buttons
+- Added 30-second auto-refresh polling for /api/stats (agents list not auto-refreshed)
+- Added Last updated Xs ago indicator next to Refresh button using a 1-second interval timer
+- Enhanced Quick Actions: New Conversation navigates to Playground, Create Agent opens dialog, Manage Tools, View Tasks, and Permissions added
+- Empty state for agents section when no agents exist, with CTA to create first agent
+- Used shadcn/ui Dialog, AlertDialog, Select, Slider, Label, Input, Textarea components
+- Toast notifications via sonner for all CRUD operations
+- Fixed agent ID tracking bug by using editingAgentId state instead of name-based lookup
+
+Stage Summary:
+- Full Agent CRUD from Dashboard UI (Create, Read, Update, Delete)
+- 30-second auto-refresh for stats with live Last updated indicator
+- 5 Quick Actions including Create Agent and Permissions
+
+---
+## Task ID: 3-d
+### Agent: full-stack-developer
+### Work Task
+Enhanced Playground with rich markdown rendering
+
+### Work Log:
+- Replaced the simple `RenderContent` component (only handled `**bold**`) with a comprehensive `renderMarkdown` function and `renderInline` helper
+- Implemented `CodeBlock` component with dark theme (bg-zinc-900), language label badge, and copy-to-clipboard button (Copy/Check icons with "Copied!" feedback)
+- `renderMarkdown` uses a multi-pass approach: first extracts fenced code blocks with `\x00` placeholders, then processes block elements (h2, h3, hr, ul, ol, paragraphs), then applies `renderInline` for text within blocks
+- `renderInline` uses an earliest-match algorithm scanning for inline code, links, bold, and italic patterns simultaneously — handles mixed inline elements correctly (e.g., `**bold *italic* text**`)
+- Supported markdown: `**bold**`, `*italic*`, `` `inline code` ``, fenced code blocks with language, `- unordered lists`, `1. ordered lists`, `## H2`, `### H3`, `--- horizontal rule`, `[text](url) links`
+- User messages remain plain text with line breaks (no markdown rendering)
+- Assistant messages use rich markdown via `renderMarkdown()`
+- Streaming cursor preserved (emerald blinking `animate-pulse` cursor while `isStreaming`)
+- Added `Copy` and `Check` imports from lucide-react
+- Lint passes with zero errors, dev server compiles successfully with 200 OK
+
+Stage Summary:
+- Rich markdown rendering in chat messages
+- Code blocks with copy functionality
+- Inline code, bold, italic, links, lists, headers, horizontal rules
+- User messages stay as plain text
+- Streaming cursor preserved
+
+---
+## Task ID: 3-e
+Agent: full-stack-developer
+Task: Add team CRUD and member management to Swarm page
+
+Work Log:
+- Created /api/teams/route.ts with GET/POST/PUT/DELETE
+- Created /api/teams/members/route.ts with POST/DELETE
+- Updated SwarmPage with Create Team, Edit Team, Delete Team dialogs
+- Added Add/Remove member functionality
+
+Stage Summary:
+- Full team CRUD from Swarm page UI
+- Member management (add/remove agents to teams)

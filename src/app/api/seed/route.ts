@@ -356,6 +356,13 @@ export async function POST() {
       { id: 'seed-rule-3', mode: 'deny', pathPattern: '/node_modules/**', isAllowed: false, commandDenyList: '[]' },
       { id: 'seed-rule-4', mode: 'ask', pathPattern: '/prisma/schema.prisma', isAllowed: true, commandDenyList: '[]' },
       { id: 'seed-rule-5', mode: 'deny', pathPattern: '/**/*.log', isAllowed: false, commandDenyList: JSON.stringify(['rm -rf /', 'DROP TABLE', 'sudo rm -rf', ':(){ :|:& };:', 'mkfs', 'dd if=/dev/zero']) },
+      { id: 'seed-rule-6', mode: 'allow', pathPattern: '/public/**', isAllowed: true, commandDenyList: '[]' },
+      { id: 'seed-rule-7', mode: 'allow', pathPattern: '/prisma/**', isAllowed: true, commandDenyList: '[]' },
+      { id: 'seed-rule-8', mode: 'deny', pathPattern: '/etc/**', isAllowed: false, commandDenyList: JSON.stringify(['cat /etc/shadow', 'cat /etc/passwd', 'chmod 777', 'chown root']) },
+      { id: 'seed-rule-9', mode: 'deny', pathPattern: '~/.ssh/**', isAllowed: false, commandDenyList: JSON.stringify(['ssh-keygen', 'ssh-copy-id', 'scp -r ~/.ssh/']) },
+      { id: 'seed-rule-10', mode: 'ask', pathPattern: '~/.config/**', isAllowed: true, commandDenyList: '[]' },
+      { id: 'seed-rule-11', mode: 'deny', pathPattern: '/tmp/**', isAllowed: false, commandDenyList: JSON.stringify(['rm -rf /tmp', 'chmod 777 /tmp']) },
+      { id: 'seed-rule-12', mode: 'deny', pathPattern: '/dist/**', isAllowed: false, commandDenyList: '[]' },
     ];
 
     for (const rule of rules) {

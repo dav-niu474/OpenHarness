@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Users,
   Wrench,
@@ -21,6 +21,10 @@ import {
   RefreshCw,
   Bot,
   AlertTriangle,
+  Trash2,
+  Pencil,
+  Plus,
+  Thermometer,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -28,7 +32,37 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Slider } from '@/components/ui/slider';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { useAgentStore } from '@/stores/agent-store';
+import { toast } from 'sonner';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -75,12 +109,38 @@ interface AgentData {
   status: string;
   provider: string;
   model: string;
+  systemPrompt: string;
+  config: string;
   _count: {
     conversations: number;
     tasks: number;
     memories: number;
   };
 }
+
+interface AgentFormData {
+  name: string;
+  description: string;
+  type: string;
+  systemPrompt: string;
+  provider: string;
+  model: string;
+  status: string;
+  temperature: number;
+  maxTokens: number;
+}
+
+const DEFAULT_FORM: AgentFormData = {
+  name: '',
+  description: '',
+  type: 'react',
+  systemPrompt: '',
+  provider: 'openai',
+  model: 'gpt-4',
+  status: 'active',
+  temperature: 0.7,
+  maxTokens: 4096,
+};
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -98,6 +158,14 @@ function formatRelativeTime(dateStr: string): string {
   if (diffHour < 24) return `${diffHour}h ago`;
   if (diffDay < 30) return `${diffDay}d ago`;
   return then.toLocaleDateString();
+}
+
+function formatSecondsAgo(seconds: number): string {
+  if (seconds < 60) return `${seconds}s ago`;
+  const min = Math.floor(seconds / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ago`;
 }
 
 function getActivityMeta(type: string) {
@@ -137,6 +205,14 @@ function getAgentIcon(type: string) {
     case 'planning': return Shield;
     case 'coding': return Cpu;
     default: return Bot;
+  }
+}
+
+function parseConfig(configStr: string): { temperature?: number; maxTokens?: number } {
+  try {
+    return JSON.parse(configStr);
+  } catch {
+    return {};
   }
 }
 
@@ -282,6 +358,314 @@ function TaskDistributionBar({
         ))}
       </div>
     </div>
+  );
+}
+
+// ── Agent Form Dialog ──────────────────────────────────────────
+
+function AgentFormDialog({
+  open,
+  onOpenChange,
+  mode,
+  initialData,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  mode: 'create' | 'edit';
+  initialData: AgentFormData | null;
+  onSubmit: (data: AgentFormData) => Promise<void>;
+}) {
+  const [form, setForm] = useState<AgentFormData>(DEFAULT_FORM);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      if (mode === 'edit' && initialData) {
+        setForm(initialData);
+      } else {
+        setForm(DEFAULT_FORM);
+      }
+    }
+  }, [open, mode, initialData]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.name.trim() || !form.systemPrompt.trim()) {
+      toast.error('Name and System Prompt are required');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onSubmit(form);
+      onOpenChange(false);
+    } catch {
+      // error handled by caller
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{mode === 'create' ? 'Create New Agent' : 'Edit Agent'}</DialogTitle>
+          <DialogDescription>
+            {mode === 'create'
+              ? 'Configure a new agent with its capabilities and behavior settings.'
+              : 'Update the agent configuration and behavior settings.'}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-5">
+          {/* Row: Name + Description */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="agent-name">
+                Name <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="agent-name"
+                placeholder="e.g., Alpha - Code Assistant"
+                value={form.name}
+                onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="agent-desc">Description</Label>
+              <Input
+                id="agent-desc"
+                placeholder="Brief description of the agent"
+                value={form.description}
+                onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          {/* Row: Type + Status */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Type</Label>
+              <Select
+                value={form.type}
+                onValueChange={(val) => setForm((prev) => ({ ...prev, type: val }))}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="react">React</SelectItem>
+                  <SelectItem value="planning">Planning</SelectItem>
+                  <SelectItem value="coding">Coding</SelectItem>
+                  <SelectItem value="custom">Custom</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Status</Label>
+              <Select
+                value={form.status}
+                onValueChange={(val) => setForm((prev) => ({ ...prev, status: val }))}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                  <SelectItem value="archived">Archived</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {/* Row: Provider + Model */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Provider</Label>
+              <Select
+                value={form.provider}
+                onValueChange={(val) => setForm((prev) => ({ ...prev, provider: val }))}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="openai">OpenAI</SelectItem>
+                  <SelectItem value="anthropic">Anthropic</SelectItem>
+                  <SelectItem value="local">Local</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="agent-model">Model</Label>
+              <Input
+                id="agent-model"
+                placeholder="gpt-4"
+                value={form.model}
+                onChange={(e) => setForm((prev) => ({ ...prev, model: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          {/* System Prompt */}
+          <div className="space-y-2">
+            <Label htmlFor="agent-prompt">
+              System Prompt <span className="text-red-500">*</span>
+            </Label>
+            <Textarea
+              id="agent-prompt"
+              placeholder="You are a helpful assistant..."
+              value={form.systemPrompt}
+              onChange={(e) => setForm((prev) => ({ ...prev, systemPrompt: e.target.value }))}
+              rows={4}
+              className="min-h-[100px]"
+            />
+          </div>
+
+          {/* Temperature Slider */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label className="flex items-center gap-2">
+                <Thermometer className="w-4 h-4 text-muted-foreground" />
+                Temperature
+              </Label>
+              <span className="text-sm font-mono font-medium text-emerald-600">
+                {form.temperature.toFixed(1)}
+              </span>
+            </div>
+            <Slider
+              value={[form.temperature]}
+              onValueChange={(val) => setForm((prev) => ({ ...prev, temperature: val[0] }))}
+              min={0}
+              max={1}
+              step={0.1}
+            />
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>Precise (0)</span>
+              <span>Creative (1)</span>
+            </div>
+          </div>
+
+          {/* Max Tokens */}
+          <div className="space-y-2">
+            <Label htmlFor="agent-tokens">Max Tokens</Label>
+            <Input
+              id="agent-tokens"
+              type="number"
+              min={256}
+              max={128000}
+              step={256}
+              value={form.maxTokens}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  maxTokens: parseInt(e.target.value) || 4096,
+                }))
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Maximum number of tokens the agent can generate per response.
+            </p>
+          </div>
+
+          {/* Submit */}
+          <DialogFooter className="pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={submitting} className="min-w-[120px]">
+              {submitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : mode === 'create' ? (
+                <>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Create Agent
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-4 h-4 mr-2" />
+                  Save Changes
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Delete Agent AlertDialog ───────────────────────────────────
+
+function DeleteAgentDialog({
+  open,
+  onOpenChange,
+  agentName,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  agentName: string;
+  onConfirm: () => Promise<void>;
+}) {
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    try {
+      await onConfirm();
+      onOpenChange(false);
+    } catch {
+      // error handled by caller
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete Agent</AlertDialogTitle>
+          <AlertDialogDescription>
+            Are you sure you want to delete <span className="font-semibold text-foreground">{agentName}</span>?
+            This will permanently remove the agent and all associated data including conversations,
+            tasks, and memories. This action cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <Button
+            variant="destructive"
+            onClick={handleDelete}
+            disabled={deleting}
+            className="min-w-[100px]"
+          >
+            {deleting ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Deleting...
+              </>
+            ) : (
+              <>
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete
+              </>
+            )}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -453,6 +837,47 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const { setActivePage } = useAgentStore();
 
+  // Auto-refresh state
+  const [lastUpdated, setLastUpdated] = useState<number>(0);
+  const lastUpdatedRef = useRef<number>(0);
+
+  // Dialog state
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editFormData, setEditFormData] = useState<AgentFormData | null>(null);
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AgentData | null>(null);
+
+  // ── Fetch functions ─────────────────────────────────────────
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/stats');
+      if (!res.ok) throw new Error('Stats request failed');
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || 'Failed to load stats');
+      setStats(json.data);
+      const now = Date.now();
+      setLastUpdated(now);
+      lastUpdatedRef.current = now;
+    } catch (err) {
+      console.error('Stats fetch error:', err);
+      // Don't overwrite error if main fetch already set it
+    }
+  }, []);
+
+  const fetchAgents = useCallback(async () => {
+    try {
+      const res = await fetch('/api/agents');
+      if (!res.ok) throw new Error('Agents request failed');
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || 'Failed to load agents');
+      setAgents(json.data);
+    } catch (err) {
+      console.error('Agents fetch error:', err);
+    }
+  }, []);
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -475,6 +900,9 @@ export default function DashboardPage() {
 
       setStats(statsJson.data);
       setAgents(agentsJson.data);
+      const now = Date.now();
+      setLastUpdated(now);
+      lastUpdatedRef.current = now;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error occurred');
     } finally {
@@ -482,9 +910,132 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // Initial load
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Auto-refresh stats every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchStats();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [fetchStats]);
+
+  // Update "last updated" text every second
+  const [refreshLabel, setRefreshLabel] = useState('');
+  useEffect(() => {
+    const tick = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - lastUpdatedRef.current) / 1000);
+      if (elapsed < 2) {
+        setRefreshLabel('just now');
+      } else {
+        setRefreshLabel(formatSecondsAgo(elapsed));
+      }
+    }, 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  // ── Agent CRUD Handlers ────────────────────────────────────
+  const handleCreateAgent = async (data: AgentFormData) => {
+    const res = await fetch('/api/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: data.name,
+        description: data.description || null,
+        type: data.type,
+        systemPrompt: data.systemPrompt,
+        provider: data.provider,
+        model: data.model,
+        status: data.status,
+        config: {
+          temperature: data.temperature,
+          maxTokens: data.maxTokens,
+        },
+      }),
+    });
+    const json = await res.json();
+    if (!json.success) {
+      toast.error(json.error || 'Failed to create agent');
+      throw new Error(json.error);
+    }
+    toast.success(`Agent "${data.name}" created successfully`);
+    await fetchAgents();
+    await fetchStats();
+  };
+
+  const handleEditAgent = async (data: AgentFormData) => {
+    if (!editFormData) return;
+    if (!editingAgentId) {
+      toast.error('No agent selected for editing');
+      throw new Error('No agent selected');
+    }
+    const res = await fetch(`/api/agents/${editingAgentId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: data.name,
+        description: data.description || null,
+        type: data.type,
+        systemPrompt: data.systemPrompt,
+        provider: data.provider,
+        model: data.model,
+        status: data.status,
+        config: {
+          temperature: data.temperature,
+          maxTokens: data.maxTokens,
+        },
+      }),
+    });
+    const json = await res.json();
+    if (!json.success) {
+      toast.error(json.error || 'Failed to update agent');
+      throw new Error(json.error);
+    }
+    toast.success(`Agent "${data.name}" updated successfully`);
+    await fetchAgents();
+    await fetchStats();
+  };
+
+  const handleDeleteAgent = async () => {
+    if (!deleteTarget) return;
+    const res = await fetch(`/api/agents/${deleteTarget.id}`, {
+      method: 'DELETE',
+    });
+    const json = await res.json();
+    if (!json.success) {
+      toast.error(json.error || 'Failed to delete agent');
+      throw new Error(json.error);
+    }
+    toast.success(`Agent "${deleteTarget.name}" deleted`);
+    await fetchAgents();
+    await fetchStats();
+  };
+
+  const openEditDialog = (agent: AgentData) => {
+    const cfg = parseConfig(agent.config || '{}');
+    const formData: AgentFormData = {
+      name: agent.name,
+      description: agent.description || '',
+      type: agent.type,
+      systemPrompt: agent.systemPrompt || '',
+      provider: agent.provider,
+      model: agent.model,
+      status: agent.status,
+      temperature: cfg.temperature ?? 0.7,
+      maxTokens: cfg.maxTokens ?? 4096,
+    };
+    setEditFormData(formData);
+    setEditingAgentId(agent.id);
+    setEditDialogOpen(true);
+  };
+
+  const openDeleteDialog = (agent: AgentData) => {
+    setDeleteTarget(agent);
+    setDeleteDialogOpen(true);
+  };
 
   // ── Error state ────────────────────────────────────────────
   if (error) {
@@ -537,13 +1088,45 @@ export default function DashboardPage() {
   // ── Quick Actions ──────────────────────────────────────────
   const QUICK_ACTIONS = [
     { label: 'New Conversation', icon: MessageSquare, page: 'playground' as const },
+    { label: 'Create Agent', icon: UserPlus, action: 'create-agent' as const },
     { label: 'Manage Tools', icon: Settings, page: 'tools' as const },
     { label: 'View Tasks', icon: ListTodo, page: 'tasks' as const },
-    { label: 'Swarm', icon: Users, page: 'swarm' as const },
+    { label: 'Permissions', icon: Shield, page: 'permissions' as const },
   ];
+
+  const handleQuickAction = (action: typeof QUICK_ACTIONS[number]) => {
+    if (action.page) {
+      setActivePage(action.page);
+    }
+    if (action.action === 'create-agent') {
+      setCreateDialogOpen(true);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6 p-6 max-w-7xl mx-auto w-full">
+      {/* ── Agent Form Dialogs ───────────────────────────── */}
+      <AgentFormDialog
+        open={createDialogOpen}
+        onOpenChange={setCreateDialogOpen}
+        mode="create"
+        initialData={null}
+        onSubmit={handleCreateAgent}
+      />
+      <AgentFormDialog
+        open={editDialogOpen}
+        onOpenChange={setEditDialogOpen}
+        mode="edit"
+        initialData={editFormData}
+        onSubmit={handleEditAgent}
+      />
+      <DeleteAgentDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        agentName={deleteTarget?.name || ''}
+        onConfirm={handleDeleteAgent}
+      />
+
       {/* ── Page Header ──────────────────────────────────── */}
       <div className="flex items-start justify-between">
         <div>
@@ -552,15 +1135,23 @@ export default function DashboardPage() {
             System overview with agent health monitoring, real-time metrics, and activity feeds.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={fetchData}
-          className="shrink-0"
-        >
-          <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          {refreshLabel && (
+            <span className="text-xs text-muted-foreground flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              Updated {refreshLabel}
+            </span>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { fetchData(); }}
+            className="shrink-0"
+          >
+            <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* ── Top Stats Row ────────────────────────────────── */}
@@ -671,16 +1262,25 @@ export default function DashboardPage() {
       </Card>
 
       {/* ── Agent List Section ───────────────────────────── */}
-      {agents.length > 0 && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-base">Registered Agents</CardTitle>
-                <CardDescription>
-                  {agents.length} agent{agents.length !== 1 ? 's' : ''} configured in the system
-                </CardDescription>
-              </div>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base">Registered Agents</CardTitle>
+              <CardDescription>
+                {agents.length} agent{agents.length !== 1 ? 's' : ''} configured in the system
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs text-muted-foreground"
+                onClick={() => setCreateDialogOpen(true)}
+              >
+                <Plus className="w-3.5 h-3.5 mr-1.5" />
+                Create Agent
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -691,8 +1291,27 @@ export default function DashboardPage() {
                 Open Playground
               </Button>
             </div>
-          </CardHeader>
-          <CardContent className="pt-0">
+          </div>
+        </CardHeader>
+        <CardContent className="pt-0">
+          {agents.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-10 text-center">
+              <Bot className="w-10 h-10 text-muted-foreground/30 mb-3" />
+              <p className="text-sm text-muted-foreground font-medium">No agents configured</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Create your first agent to get started
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-4"
+                onClick={() => setCreateDialogOpen(true)}
+              >
+                <Plus className="w-3.5 h-3.5 mr-1.5" />
+                Create Agent
+              </Button>
+            </div>
+          ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {agents.map((agent) => {
                 const TypeIcon = getAgentIcon(agent.type);
@@ -700,7 +1319,8 @@ export default function DashboardPage() {
                 return (
                   <div
                     key={agent.id}
-                    className="p-4 rounded-xl border bg-muted/30 hover:bg-muted/50 transition-colors"
+                    className="p-4 rounded-xl border bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer group"
+                    onClick={() => openEditDialog(agent)}
                   >
                     <div className="flex items-start gap-3">
                       <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-emerald-500/10 shrink-0">
@@ -719,6 +1339,30 @@ export default function DashboardPage() {
                         <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
                           {agent.description || 'No description provided'}
                         </p>
+                      </div>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEditDialog(agent);
+                          }}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-muted-foreground hover:text-red-500"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openDeleteDialog(agent);
+                          }}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
                       </div>
                     </div>
                     <div className="flex items-center gap-4 mt-3 pt-3 border-t">
@@ -739,9 +1383,9 @@ export default function DashboardPage() {
                 );
               })}
             </div>
-          </CardContent>
-        </Card>
-      )}
+          )}
+        </CardContent>
+      </Card>
 
       {/* ── Bottom Row: Recent Activity + Task Distribution + Quick Actions ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -854,7 +1498,7 @@ export default function DashboardPage() {
                       key={action.label}
                       variant="outline"
                       className="h-auto flex-col gap-2 py-4 px-3 hover:bg-emerald-50 hover:border-emerald-200 hover:text-emerald-700 transition-colors cursor-pointer"
-                      onClick={() => setActivePage(action.page)}
+                      onClick={() => handleQuickAction(action)}
                     >
                       <Icon className="w-5 h-5 text-muted-foreground group-hover:text-emerald-600" />
                       <span className="text-xs font-medium">{action.label}</span>
