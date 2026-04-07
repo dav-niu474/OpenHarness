@@ -48,7 +48,8 @@ OpenHarness 认为：**Agent Harness = LLM + Tools + Knowledge + Observation + A
 - 任务分布可视化
 
 ### 🤖 Agent Playground（智能体工作台）
-- **真实 AI 对话** — 接入 LLM API，支持多轮对话
+- **SSE 流式对话** — 接入 LLM API，实时打字机效果，闪烁光标
+- **Rich Markdown 渲染** — 代码块高亮、复制按钮、列表、标题、链接、粗体/斜体
 - 多 Agent 切换（Alpha-代码助手、Beta-研究助手、Gamma-运维助手）
 - 会话管理（新建、切换、自动标题）
 - 工具调用可视化卡片
@@ -69,7 +70,8 @@ OpenHarness 认为：**Agent Harness = LLM + Tools + Knowledge + Observation + A
 - 搜索和分类筛选
 
 ### 🤝 Swarm Coordination（群体协调）
-- 多 Agent 团队管理
+- **团队 CRUD** — 创建/编辑/删除 Agent 团队（含协作模式、最大成员数配置）
+- **成员管理** — 添加/移除团队成员，角色分配（leader/worker/reviewer/observer）
 - 网络拓扑可视化（Coordinator ↔ Workers）
 - 团队成员状态监控
 - 任务完成度统计
@@ -81,10 +83,10 @@ OpenHarness 认为：**Agent Harness = LLM + Tools + Knowledge + Observation + A
 - 上下文利用率统计
 
 ### 🛡️ Permissions（安全治理）
+- **权限规则 CRUD** — 路径规则创建/编辑/删除，支持 allow/deny/ask 模式
 - 三种权限模式（Default/Auto/Plan）
-- 路径规则管理（允许/拒绝/询问）
-- 命令黑名单
-- Hook 管理（PreToolUse/PostToolUse）
+- 命令黑名单管理（关联到权限规则，添加/移除）
+- Hook 管理（PreToolUse/PostToolUse，暂停/恢复）
 
 ### 📋 Task Manager（任务管理器）
 - 后台任务追踪与创建
@@ -152,13 +154,18 @@ src/
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/api/agent/chat` | POST | AI 对话（接入 LLM） |
+| `/api/agent/chat/stream` | POST | AI 流式对话（SSE） |
 | `/api/agents` | GET/POST | Agent 列表/创建 |
 | `/api/agents/[id]` | GET/PUT/DELETE | Agent 详情/更新/删除 |
 | `/api/conversations` | GET/POST | 会话列表/创建 |
+| `/api/conversations/[id]` | GET/PUT/DELETE | 会话详情/更新/删除 |
 | `/api/tools` | GET/POST/PUT | 工具列表/创建/切换 |
 | `/api/skills` | GET/POST/PUT | 技能列表/创建/切换 |
 | `/api/tasks` | GET/POST | 任务列表/创建 |
 | `/api/tasks/[id]` | GET/PUT/DELETE | 任务详情/更新/删除 |
+| `/api/teams` | GET/POST/PUT/DELETE | 团队 CRUD |
+| `/api/teams/members` | POST/DELETE | 团队成员管理 |
+| `/api/permissions` | GET/POST/PUT/DELETE | 权限规则 CRUD |
 | `/api/stats` | GET | 仪表盘统计 |
 | `/api/seed` | POST | 数据库初始化 |
 
@@ -233,16 +240,22 @@ curl -X POST http://localhost:3000/api/seed
 - [x] Permissions（权限模式、路径规则、命令黑名单）
 - [x] Task Manager（任务 CRUD、进度追踪、优先级）
 
-### Phase 4 🔲 — 增强 Agent 能力（计划中）
+### Phase 4 ✅ — 增强 Agent 能力（已完成）
 
+- [x] **流式响应** — SSE 实时流式对话，打字机效果 + 闪烁光标
+- [x] **Agent 自定义** — 创建/编辑/删除 Agent（System Prompt、模型选择、温度调节）
+- [x] **Rich Markdown 渲染** — 代码块高亮、复制按钮、列表、标题、链接
+- [x] **Permissions CRUD** — 权限规则增删改查、命令黑名单管理、Hook 配置
+- [x] **团队管理** — 创建/编辑/删除团队、添加/移除成员、角色分配
+- [x] **Dashboard 自动刷新** — 30 秒轮询统计数据、最后更新时间指示器
 - [ ] **MCP 协议集成** — 接入 Model Context Protocol 服务器
-- [ ] **流式响应** — SSE/WebSocket 实时流式对话
 - [ ] **工具执行引擎** — 真正的文件读写、Shell 执行、代码搜索
 - [ ] **多模态支持** — 图片理解、文件上传、语音输入
-- [ ] **Agent 自定义** — 用户自定义 Agent（System Prompt、模型选择）
 
-### Phase 5 🔲 — 多 Agent 协作（计划中）
+### Phase 5 🔄 — 多 Agent 协作（进行中）
 
+- [x] **团队创建管理** — 从 UI 创建/编辑/删除 Agent 团队
+- [x] **成员管理** — 添加/移除团队成员，支持角色分配（leader/worker/reviewer/observer）
 - [ ] **子 Agent 派生** — 主 Agent 动态创建子 Agent 处理子任务
 - [ ] **团队协作引擎** — Agent 间消息传递和任务委派
 - [ ] **背景任务系统** — Agent 在后台自主执行长时间任务
@@ -251,6 +264,9 @@ curl -X POST http://localhost:3000/api/seed
 
 ### Phase 6 🔲 — 高级安全与治理（计划中）
 
+- [x] **权限规则 CRUD** — 路径规则创建/编辑/删除，支持 allow/deny/ask 模式
+- [x] **命令黑名单** — 从 UI 管理危险命令列表，关联到权限规则
+- [x] **Hook 管理** — PreToolUse/PostToolUse 事件钩子，支持暂停/恢复
 - [ ] **RBAC 权限系统** — 基于角色的访问控制
 - [ ] **审计日志** — 完整的操作日志记录与查询
 - [ ] **沙箱执行** — Agent 操作在隔离沙箱中执行
