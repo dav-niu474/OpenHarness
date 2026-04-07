@@ -26,15 +26,13 @@ export async function POST(req: NextRequest) {
     // Determine model
     let effectiveModelId = modelId || 'default';
     let systemPrompt =
-      'You are an AI agent powered by OpenHarness. You are a helpful coding assistant with access to tools like file operations, web search, and code analysis. Respond concisely and helpfully. Use markdown formatting when appropriate.';
+      'You are an AI agent powered by OpenHarness. You are a helpful coding assistant with access to tools like file operations, web search, and code analysis. Respond concisely and helpfully. Use markdown formatting when appropriate, including code blocks, tables, and lists.';
 
     if (dbAgentId) {
       const agent = await db.agent.findUnique({ where: { id: dbAgentId } });
       if (agent) {
         systemPrompt = agent.systemPrompt || systemPrompt;
-        // Use agent's configured model if no explicit modelId is provided
         if (!modelId && agent.provider && agent.model) {
-          // Check if agent's provider/model maps to a known model
           if (agent.provider === 'nvidia') {
             effectiveModelId = agent.model;
           }
@@ -47,8 +45,6 @@ export async function POST(req: NextRequest) {
     // ── Build messages array ────────────────────────────────────
     const messages: LLMMessage[] = [{ role: 'system', content: systemPrompt }];
 
-    // If conversationId is provided, try to load history from DB
-    // If conversation doesn't exist, we'll skip DB persistence (supports client-only mode)
     let dbConversationId: string | null = null;
     if (conversationId) {
       const conversation = await db.conversation.findUnique({
@@ -69,7 +65,6 @@ export async function POST(req: NextRequest) {
           }
         }
       }
-      // If conversation not found, it's a client-only conversation — continue without DB persistence
     }
 
     messages.push({ role: 'user', content: message });
@@ -93,7 +88,9 @@ export async function POST(req: NextRequest) {
     const decoder = new TextDecoder();
 
     let fullContent = '';
+    let fullThinking = '';
     let usageData: Record<string, number> | null = null;
+    const toolCallsAccumulator: Record<string, { id: string; name: string; arguments: string }> = {};
 
     const readable = new ReadableStream({
       async start(controller) {
@@ -118,15 +115,63 @@ export async function POST(req: NextRequest) {
               if (trimmed.startsWith('data: ')) {
                 try {
                   const json = JSON.parse(trimmed.slice(6));
-                  const content = json.choices?.[0]?.delta?.content;
+                  const delta = json.choices?.[0]?.delta;
+
+                  // Handle thinking/reasoning content (NVIDIA GLM models)
+                  const thinkingContent = delta?.reasoning_content;
+                  if (thinkingContent) {
+                    fullThinking += thinkingContent;
+                    controller.enqueue(
+                      encoder.encode(
+                        `data: ${JSON.stringify({ type: 'thinking', content: thinkingContent, model: modelInfo.name })}\n\n`
+                      )
+                    );
+                  }
+
+                  // Handle regular content
+                  const content = delta?.content;
                   if (content) {
                     fullContent += content;
                     controller.enqueue(
                       encoder.encode(
-                        `data: ${JSON.stringify({ content, model: modelInfo.name })}\n\n`
+                        `data: ${JSON.stringify({ type: 'token', content, model: modelInfo.name })}\n\n`
                       )
                     );
                   }
+
+                  // Handle tool calls (OpenAI-compatible format)
+                  const toolCalls = delta?.tool_calls;
+                  if (toolCalls && Array.isArray(toolCalls)) {
+                    for (const tc of toolCalls) {
+                      if (tc.id) {
+                        toolCallsAccumulator[tc.index ?? 0] = {
+                          id: tc.id,
+                          name: tc.function?.name || 'unknown',
+                          arguments: tc.function?.arguments || '',
+                        };
+                      } else if (toolCallsAccumulator[tc.index ?? 0]) {
+                        // Append arguments to existing tool call
+                        toolCallsAccumulator[tc.index ?? 0].arguments += (tc.function?.arguments || '');
+                      }
+
+                      // Emit tool_call event
+                      const acc = toolCallsAccumulator[tc.index ?? 0];
+                      if (acc) {
+                        controller.enqueue(
+                          encoder.encode(
+                            `data: ${JSON.stringify({
+                              type: 'tool_call',
+                              toolCallId: acc.id,
+                              name: acc.name,
+                              arguments: acc.arguments,
+                              done: !tc.function?.arguments,
+                            })}\n\n`
+                          )
+                        );
+                      }
+                    }
+                  }
+
                   if (json.usage) {
                     usageData = json.usage;
                   }
@@ -143,11 +188,23 @@ export async function POST(req: NextRequest) {
             if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
               try {
                 const json = JSON.parse(trimmed.slice(6));
-                const content = json.choices?.[0]?.delta?.content;
+                const delta = json.choices?.[0]?.delta;
+
+                const thinkingContent = delta?.reasoning_content;
+                if (thinkingContent) {
+                  fullThinking += thinkingContent;
+                  controller.enqueue(
+                    encoder.encode(
+                      `data: ${JSON.stringify({ type: 'thinking', content: thinkingContent, model: modelInfo.name })}\n\n`
+                    )
+                  );
+                }
+
+                const content = delta?.content;
                 if (content) {
                   fullContent += content;
                   controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify({ content, model: modelInfo.name })}\n\n`)
+                    encoder.encode(`data: ${JSON.stringify({ type: 'token', content, model: modelInfo.name })}\n\n`)
                   );
                 }
                 if (json.usage) {
@@ -160,21 +217,24 @@ export async function POST(req: NextRequest) {
           }
 
           // Send final done event with usage and model info
+          const completedToolCalls = Object.values(toolCallsAccumulator);
           controller.enqueue(
             encoder.encode(
               `data: ${JSON.stringify({
-                done: true,
+                type: 'done',
                 usage: usageData,
                 model: modelInfo.name,
                 modelId: modelInfo.id,
                 provider: modelInfo.provider,
+                thinkingLength: fullThinking.length,
+                toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
               })}\n\n`
             )
           );
         } catch (error) {
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ done: true, error: String(error) })}\n\n`
+              `data: ${JSON.stringify({ type: 'done', error: String(error) })}\n\n`
             )
           );
         } finally {
