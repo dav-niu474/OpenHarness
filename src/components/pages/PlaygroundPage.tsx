@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -12,7 +12,6 @@ import {
   Paperclip,
   CheckCircle2,
   Clock,
-  Bot,
   User,
   CircleDot,
   Sparkles,
@@ -32,19 +31,11 @@ import {
   MessageSquare,
   X,
   StopCircle,
-  Eye,
-  EyeOff,
   AlertTriangle,
   Timer,
   Network,
-  Users,
   ToggleLeft,
   ToggleRight,
-  FileCode2,
-  Hash,
-  Globe,
-  Layers,
-  Shield,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -342,13 +333,6 @@ function ThinkingBlock({ thinking, isStreaming }: { thinking: string; isStreamin
         </div>
       </div>
 
-      {/* CSS for border glow animation */}
-      <style jsx global>{`
-        @keyframes borderGlow {
-          0%, 100% { opacity: 0.5; }
-          50% { opacity: 1; }
-        }
-      `}</style>
     </Collapsible>
   );
 }
@@ -1725,6 +1709,7 @@ export default function PlaygroundPage() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Skills state
   const [availableSkills, setAvailableSkills] = useState<SkillData[]>([]);

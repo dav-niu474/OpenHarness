@@ -124,3 +124,9 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Custom keyframes for playground components */
+@keyframes borderGlow {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
