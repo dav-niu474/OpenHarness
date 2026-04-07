@@ -21,7 +21,6 @@ import {
   Cpu,
   Brain,
   ChevronDown,
-  ChevronRight,
   Lightbulb,
   Zap,
   BookOpen,
@@ -32,7 +31,6 @@ import {
   X,
   StopCircle,
   AlertTriangle,
-  Timer,
   Network,
   ToggleLeft,
   ToggleRight,
@@ -231,108 +229,43 @@ function formatTimestamp(ts: string): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function estimateThinkingTime(charCount: number): string {
-  const seconds = Math.max(1, Math.round(charCount / 30));
-  if (seconds < 60) return `~${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `~${mins}m ${secs}s`;
-}
 
 // ═══════════════════════════════════════════════════════════════════
 // THINKING BLOCK COMPONENT (Premium)
 // ═══════════════════════════════════════════════════════════════════
 
 function ThinkingBlock({ thinking, isStreaming }: { thinking: string; isStreaming?: boolean }) {
-  const [isOpen, setIsOpen] = useState(true);
-  const [startTime] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (!isStreaming) return;
-    const interval = setInterval(() => {
-      // Force re-render for time estimation
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [isStreaming]);
+  const [isOpen, setIsOpen] = useState(false);
 
   if (!thinking) return null;
 
-  const elapsed = isStreaming ? estimateThinkingTime(thinking.length) : null;
-
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <div className="rounded-xl overflow-hidden mb-3 relative">
-        {/* Animated border glow */}
-        <div className="absolute inset-0 rounded-xl bg-gradient-to-r from-violet-500/20 via-fuchsia-500/20 to-violet-500/20 animate-[borderGlow_3s_ease-in-out_infinite] blur-sm" />
-        <div className="relative rounded-xl bg-gradient-to-br from-violet-950/90 via-violet-900/80 to-indigo-950/90 border border-violet-500/30 overflow-hidden">
-          <CollapsibleTrigger className="w-full flex items-center gap-2.5 px-4 py-2.5 hover:bg-white/5 transition-colors">
-            <div className="relative">
-              <Brain className="w-4 h-4 text-violet-300" />
-              {isStreaming && (
-                <motion.div
-                  className="absolute inset-0 rounded-full bg-violet-400/40"
-                  animate={{ scale: [1, 1.5, 1], opacity: [0.5, 0, 0.5] }}
-                  transition={{ duration: 2, repeat: Infinity }}
-                />
-              )}
-            </div>
-            <span className="text-xs font-semibold text-violet-200 flex-1 text-left tracking-wide">
-              {isStreaming ? 'Thinking...' : `Thought Process`}
-            </span>
+      <div className="rounded-lg border border-border bg-muted/50 dark:bg-zinc-800/50 mb-2 overflow-hidden">
+        <CollapsibleTrigger className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/80 dark:hover:bg-zinc-800 transition-colors text-left">
+          <Brain className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+          <span className="text-xs font-medium text-muted-foreground flex-1">
+            {isStreaming ? 'Thinking...' : 'Thought Process'}
+          </span>
+          <span className="text-[10px] text-muted-foreground/60 font-mono tabular-nums">
+            {thinking.length} chars
+          </span>
+          <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground/60 transition-transform duration-200 ${isOpen ? 'rotate-0' : '-rotate-90'}`} />
+        </CollapsibleTrigger>
 
-            {/* Progress dots while streaming */}
-            {isStreaming && (
-              <div className="flex items-center gap-1 mr-2">
-                {[0, 1, 2].map((i) => (
-                  <motion.div
-                    key={i}
-                    className="w-1.5 h-1.5 rounded-full bg-violet-400"
-                    animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1.2, 0.8] }}
-                    transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.2 }}
-                  />
-                ))}
-              </div>
-            )}
-
-            {isStreaming && elapsed && (
-              <Badge className="text-[10px] h-5 px-2 bg-violet-800/50 text-violet-300 border-violet-600/30 hover:bg-violet-800/50">
-                <Timer className="w-2.5 h-2.5 mr-1" />
-                {elapsed}
-              </Badge>
-            )}
-
-            {!isStreaming && (
-              <Badge className="text-[10px] h-5 px-2 bg-violet-800/50 text-violet-300 border-violet-600/30 hover:bg-violet-800/50">
-                {thinking.length} chars
-              </Badge>
-            )}
-
-            {isOpen ? (
-              <ChevronDown className="w-3.5 h-3.5 text-violet-400" />
-            ) : (
-              <ChevronRight className="w-3.5 h-3.5 text-violet-400" />
-            )}
-          </CollapsibleTrigger>
-
-          <CollapsibleContent>
-            <div className="px-4 pb-3 pt-1">
-              <div className="border-t border-violet-500/20 pt-3">
-                <div className="text-[13px] text-violet-100/90 leading-[1.7] whitespace-pre-wrap font-mono tracking-tight">
-                  {thinking}
-                  {isStreaming && (
-                    <motion.span
-                      className="inline-block w-[2px] h-4 bg-violet-300 ml-1 align-text-bottom"
-                      animate={{ opacity: [1, 0] }}
-                      transition={{ duration: 0.8, repeat: Infinity }}
-                    />
-                  )}
-                </div>
+        <CollapsibleContent>
+          <div className="px-3 pb-3 pt-0">
+            <div className="border-t border-border/50 pt-2">
+              <div className="text-sm text-muted-foreground/80 leading-relaxed whitespace-pre-wrap font-mono">
+                {thinking}
+                {isStreaming && (
+                  <span className="inline-block w-[2px] h-4 bg-current ml-0.5 align-text-bottom animate-pulse" />
+                )}
               </div>
             </div>
-          </CollapsibleContent>
-        </div>
+          </div>
+        </CollapsibleContent>
       </div>
-
     </Collapsible>
   );
 }
@@ -1858,19 +1791,6 @@ export default function PlaygroundPage() {
     }
   }, [streamingMsgId]);
 
-  // Build message with skills prepended
-  const buildMessageWithSkills = useCallback((rawMessage: string): string => {
-    if (enabledSkills.length === 0) return rawMessage;
-    const skillDataList = availableSkills.filter((s) => enabledSkills.includes(s.id));
-    if (skillDataList.length === 0) return rawMessage;
-
-    const skillNames = skillDataList.map((s) => s.name).join(', ');
-    const skillBlocks = skillDataList
-      .map((s) => `--- Skill: ${s.name} ---\n${s.content}\n--- End Skill ---`)
-      .join('\n\n');
-
-    return `[Loaded Skills: ${skillNames}]\n\n${skillBlocks}\n\n${rawMessage}`;
-  }, [enabledSkills, availableSkills]);
 
   // Stream a single agent response
   const streamAgentResponse = useCallback(async (
@@ -1891,6 +1811,7 @@ export default function PlaygroundPage() {
         agentId,
         conversationId: convId,
         modelId: selectedModel,
+        skillIds: enabledSkills,
       }),
       signal,
     });
@@ -2066,7 +1987,6 @@ export default function PlaygroundPage() {
     const isMultiAgent = agentMode === 'multi' && multiAgentIds.length >= 2;
     const agentsToUse = isMultiAgent ? multiAgentIds : [selectedAgent];
     const trimmedInput = inputValue.trim();
-    const messageWithSkills = buildMessageWithSkills(trimmedInput);
 
     let convId = activeConvId;
     if (!convId) {
@@ -2139,7 +2059,7 @@ export default function PlaygroundPage() {
           setLoopStatus('thinking');
 
           try {
-            await streamAgentResponse(agentId, messageWithSkills, convId, assistantMsgId, abortController.signal);
+            await streamAgentResponse(agentId, trimmedInput, convId, assistantMsgId, abortController.signal);
           } catch (err) {
             if (abortController.signal.aborted) break;
             const errorMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -2182,7 +2102,7 @@ export default function PlaygroundPage() {
 
         setStreamingMsgId(assistantMsgId);
 
-        await streamAgentResponse(selectedAgent, messageWithSkills, convId, assistantMsgId, abortController.signal);
+        await streamAgentResponse(selectedAgent, trimmedInput, convId, assistantMsgId, abortController.signal);
         setStreamingMsgId(null);
       }
     } catch (err) {

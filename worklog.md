@@ -725,3 +725,81 @@ Work Log:
 Stage Summary:
 - Full team CRUD from Swarm page UI
 - Member management (add/remove agents to teams)
+
+---
+
+## Task ID: 1 - Main Agent (Bug Fixes & Enhancements)
+### Work Task
+Fix 3 issues: (1) Simplify ThinkingBlock rendering, (2) Fix Agent Skills Support in Chat, (3) Enhance Create Agent with Skills/Agent.md/Soul.md support.
+
+### Work Summary
+All 3 issues completed successfully. Zero lint errors, dev server running correctly.
+
+**Issue 1: Simplify ThinkingBlock Rendering**
+
+Redesigned the ThinkingBlock component in `PlaygroundPage.tsx` from a flashy animated design (violet gradients, glow borders, pulsing dots, breathing animations) to a clean, minimal, elegant design inspired by ChatGPT/Claude's thinking style:
+
+- Simple `bg-muted/50 dark:bg-zinc-800/50` background with subtle `border border-border`
+- Small Brain icon + "Thought Process" / "Thinking..." label + character count — no gradient or glow
+- Clean `text-sm font-mono` text inside, no fancy styling
+- Simple chevron toggle (CSS `rotate-90` instead of two different icons)
+- Kept streaming cursor (`animate-pulse` on inline-block) but removed ALL pulsing/breathing/glow/framer-motion animations
+- Defaults to collapsed (`isOpen` starts `false`)
+- Removed unused imports: `Timer`, `ChevronRight`, `estimateThinkingTime` helper function
+
+**Issue 2: Fix Agent Skills Support in Chat**
+
+Root cause: `buildMessageWithSkills` prepended raw skill content to the user message, which was wrong. Skills should be injected into the **system prompt** on the backend.
+
+Backend changes (`/src/app/api/agent/chat/stream/route.ts`):
+- Now accepts `skillIds: string[]` in the POST body
+- Fetches skills from DB by ID and appends them to the system prompt with structured format:
+  ```
+  ## Available Skills
+  The following skills are loaded and available to you:
+  - **skill_name**: description (category)
+    Content: skill content here...
+  You should use these skills when relevant to the user's request. Tell the user about available skills if they ask.
+  ```
+- Also fetches and merges skills from the agent's `boundSkills` field (from Issue 3)
+
+Frontend changes (`/src/components/pages/PlaygroundPage.tsx`):
+- Passes `skillIds: enabledSkills` in the POST body to `/api/agent/chat/stream`
+- Removed the entire `buildMessageWithSkills` function and its usage
+- User messages now contain only the user's text (no skill content prepended)
+
+**Issue 3: Enhance Create Agent — Skills, Agent.md, Soul.md**
+
+a) **Database Schema** (`/prisma/schema.prisma`):
+- Added `soulPrompt String @default("")` — Soul/personality prompt (soul.md content)
+- Added `agentMd String @default("")` — Agent markdown (agent.md content)
+- Added `boundSkills String @default("[]")` — JSON array of skill IDs bound to this agent
+- Ran `bun run db:push` successfully, Prisma Client regenerated
+
+b) **Backend** (`/src/app/api/agents/route.ts`):
+- Updated POST handler to accept `soulPrompt`, `agentMd`, `boundSkills` fields
+- `boundSkills` is JSON.stringify'd when saving to DB
+
+c) **Backend** (`/src/app/api/agent/chat/stream/route.ts`):
+- When building system prompt for an agent, includes `agentMd` as "Agent Persona (agent.md)" section
+- Includes `soulPrompt` as "Soul/Core Personality (soul.md)" section
+- Also fetches the agent's `boundSkills` (parsed from JSON) and merges them with request-provided `skillIds`
+
+d) **Frontend** (`/src/components/pages/DashboardPage.tsx`):
+- Added new imports: `BookOpen`, `Sparkles`, `Heart`, `FileText` icons, `Checkbox` component
+- Extended `AgentFormData` interface with `soulPrompt: string`, `agentMd: string`, `boundSkills: string[]`
+- Updated `DEFAULT_FORM` with empty defaults for new fields
+- Created `SkillSelector` component — fetches all skills from `/api/skills` API, renders a scrollable checkbox list with skill name, description, and category badge
+- Added 3 new form fields to `AgentFormDialog`:
+  - **Soul Prompt** — Textarea with Heart icon and helper text
+  - **Agent.md** — Textarea with FileText icon and helper text
+  - **Bound Skills** — Multi-select from available skills using checkbox list
+- Updated `handleCreateAgent` and `handleEditAgent` to send new fields in API calls
+- Updated `openEditDialog` to parse `soulPrompt`, `agentMd`, `boundSkills` from agent data when editing
+
+**Files modified:**
+- `src/components/pages/PlaygroundPage.tsx` (Issues 1 & 2)
+- `src/app/api/agent/chat/stream/route.ts` (Issues 2 & 3)
+- `src/app/api/agents/route.ts` (Issue 3)
+- `prisma/schema.prisma` (Issue 3)
+- `src/components/pages/DashboardPage.tsx` (Issue 3)

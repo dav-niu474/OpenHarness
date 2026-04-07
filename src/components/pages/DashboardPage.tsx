@@ -25,6 +25,10 @@ import {
   Pencil,
   Plus,
   Thermometer,
+  BookOpen,
+  Sparkles,
+  Heart,
+  FileText,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -35,6 +39,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Slider } from '@/components/ui/slider';
 import {
   Select,
@@ -118,6 +123,13 @@ interface AgentData {
   };
 }
 
+interface SkillOption {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string;
+}
+
 interface AgentFormData {
   name: string;
   description: string;
@@ -128,6 +140,9 @@ interface AgentFormData {
   status: string;
   temperature: number;
   maxTokens: number;
+  soulPrompt: string;
+  agentMd: string;
+  boundSkills: string[];
 }
 
 const DEFAULT_FORM: AgentFormData = {
@@ -140,6 +155,9 @@ const DEFAULT_FORM: AgentFormData = {
   status: 'active',
   temperature: 0.7,
   maxTokens: 4096,
+  soulPrompt: '',
+  agentMd: '',
+  boundSkills: [],
 };
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -361,6 +379,95 @@ function TaskDistributionBar({
   );
 }
 
+// ── Skill Selector Component ────────────────────────────────────
+
+function SkillSelector({
+  selectedIds,
+  onToggle,
+}: {
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+}) {
+  const [skills, setSkills] = useState<SkillOption[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchSkills() {
+      try {
+        const res = await fetch('/api/skills');
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          setSkills(
+            json.data.map((s: Record<string, unknown>) => ({
+              id: s.id as string,
+              name: s.name as string,
+              description: s.description as string | null,
+              category: (s.category as string) || 'general',
+            }))
+          );
+        }
+      } catch {
+        // silently fail
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchSkills();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        Loading skills...
+      </div>
+    );
+  }
+
+  if (skills.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-4 text-xs text-muted-foreground border rounded-lg border-dashed">
+        <Sparkles className="w-3.5 h-3.5 mr-1.5" />
+        No skills available. Add skills in the Skills Manager.
+      </div>
+    );
+  }
+
+  return (
+    <div className="border rounded-lg max-h-48 overflow-y-auto">
+      <div className="divide-y">
+        {skills.map((skill) => {
+          const isSelected = selectedIds.includes(skill.id);
+          return (
+            <label
+              key={skill.id}
+              className={`flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors text-sm ${
+                isSelected ? 'bg-violet-50 dark:bg-violet-950/20' : 'hover:bg-muted/50'
+              }`}
+            >
+              <Checkbox
+                checked={isSelected}
+                onCheckedChange={() => onToggle(skill.id)}
+              />
+              <div className="flex-1 min-w-0">
+                <span className="font-medium text-xs">{skill.name}</span>
+                {skill.description && (
+                  <p className="text-[10px] text-muted-foreground truncate mt-0.5">
+                    {skill.description}
+                  </p>
+                )}
+              </div>
+              <Badge variant="outline" className="text-[9px] h-4 px-1.5 text-muted-foreground shrink-0">
+                {skill.category}
+              </Badge>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Agent Form Dialog ──────────────────────────────────────────
 
 function AgentFormDialog({
@@ -558,6 +665,74 @@ function AgentFormDialog({
               className="min-h-[100px]"
             />
           </div>
+
+          {/* Separator for extended fields */}
+          <Separator />
+
+          {/* Soul Prompt */}
+          <div className="space-y-2">
+            <Label htmlFor="agent-soul" className="flex items-center gap-2">
+              <Heart className="w-4 h-4 text-rose-400" />
+              Soul Prompt
+            </Label>
+            <Textarea
+              id="agent-soul"
+              placeholder="Define the agent's core personality, values, beliefs, and inner voice..."
+              value={form.soulPrompt}
+              onChange={(e) => setForm((prev) => ({ ...prev, soulPrompt: e.target.value }))}
+              rows={3}
+              className="min-h-[80px]"
+            />
+            <p className="text-xs text-muted-foreground">
+              The soul prompt defines the agent's core personality and character (soul.md).
+            </p>
+          </div>
+
+          {/* Agent.md */}
+          <div className="space-y-2">
+            <Label htmlFor="agent-md" className="flex items-center gap-2">
+              <FileText className="w-4 h-4 text-amber-500" />
+              Agent.md
+            </Label>
+            <Textarea
+              id="agent-md"
+              placeholder="Agent instructions, capabilities, constraints, and behavioral guidelines..."
+              value={form.agentMd}
+              onChange={(e) => setForm((prev) => ({ ...prev, agentMd: e.target.value }))}
+              rows={3}
+              className="min-h-[80px]"
+            />
+            <p className="text-xs text-muted-foreground">
+              Detailed instructions and context injected into the agent's system prompt (agent.md).
+            </p>
+          </div>
+
+          {/* Bound Skills */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              <BookOpen className="w-4 h-4 text-violet-500" />
+              Bound Skills
+              <span className="text-xs text-muted-foreground font-normal">
+                ({form.boundSkills.length} selected)
+              </span>
+            </Label>
+            <SkillSelector
+              selectedIds={form.boundSkills}
+              onToggle={(id) =>
+                setForm((prev) => ({
+                  ...prev,
+                  boundSkills: prev.boundSkills.includes(id)
+                    ? prev.boundSkills.filter((s) => s !== id)
+                    : [...prev.boundSkills, id],
+                }))
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Skills bound to this agent will be automatically injected into every conversation.
+            </p>
+          </div>
+
+          <Separator />
 
           {/* Temperature Slider */}
           <div className="space-y-3">
@@ -989,6 +1164,9 @@ export default function DashboardPage() {
           temperature: data.temperature,
           maxTokens: data.maxTokens,
         },
+        soulPrompt: data.soulPrompt || '',
+        agentMd: data.agentMd || '',
+        boundSkills: data.boundSkills,
       }),
     });
     const json = await res.json();
@@ -1022,6 +1200,9 @@ export default function DashboardPage() {
           temperature: data.temperature,
           maxTokens: data.maxTokens,
         },
+        soulPrompt: data.soulPrompt || '',
+        agentMd: data.agentMd || '',
+        boundSkills: data.boundSkills,
       }),
     });
     const json = await res.json();
@@ -1051,6 +1232,15 @@ export default function DashboardPage() {
 
   const openEditDialog = (agent: AgentData) => {
     const cfg = parseConfig(agent.config || '{}');
+    let parsedBoundSkills: string[] = [];
+    try {
+      const raw = (agent as Record<string, unknown>).boundSkills;
+      if (typeof raw === 'string' && raw) {
+        parsedBoundSkills = JSON.parse(raw);
+      }
+    } catch {
+      // ignore
+    }
     const formData: AgentFormData = {
       name: agent.name,
       description: agent.description || '',
@@ -1061,6 +1251,9 @@ export default function DashboardPage() {
       status: agent.status,
       temperature: cfg.temperature ?? 0.7,
       maxTokens: cfg.maxTokens ?? 4096,
+      soulPrompt: (agent as Record<string, unknown>).soulPrompt as string || '',
+      agentMd: (agent as Record<string, unknown>).agentMd as string || '',
+      boundSkills: parsedBoundSkills,
     };
     setEditFormData(formData);
     setEditingAgentId(agent.id);

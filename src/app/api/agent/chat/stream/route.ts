@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: NextRequest) {
   try {
     await ensureDatabase();
-    const { agentId, message, conversationId, modelId, model } = await req.json();
+    const { agentId, message, conversationId, modelId, model, skillIds } = await req.json();
     const effectiveModelReqId = modelId || model;
 
     if (!message || typeof message !== 'string') {
@@ -30,10 +30,17 @@ export async function POST(req: NextRequest) {
     let systemPrompt =
       'You are an AI agent powered by OpenHarness. You are a helpful coding assistant with access to tools like file operations, web search, and code analysis. Respond concisely and helpfully. Use markdown formatting when appropriate, including code blocks, tables, and lists.';
 
+    let agentData: { agentMd?: string; soulPrompt?: string; boundSkills?: string } | null = null;
+
     if (dbAgentId) {
       const agent = await db.agent.findUnique({ where: { id: dbAgentId } });
       if (agent) {
         systemPrompt = agent.systemPrompt || systemPrompt;
+        agentData = {
+          agentMd: agent.agentMd || '',
+          soulPrompt: agent.soulPrompt || '',
+          boundSkills: agent.boundSkills || '[]',
+        };
         if (!modelId && agent.provider && agent.model) {
           if (agent.provider === 'nvidia') {
             effectiveModelId = agent.model;
@@ -42,10 +49,63 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── Inject skills into system prompt ───────────────────────
+    const skillIdsToFetch: string[] = [];
+
+    // Skills from the request body (user-enabled in playground)
+    if (Array.isArray(skillIds) && skillIds.length > 0) {
+      skillIdsToFetch.push(...skillIds);
+    }
+
+    // Skills bound to the agent
+    if (agentData?.boundSkills) {
+      try {
+        const bound: string[] = JSON.parse(agentData.boundSkills);
+        if (Array.isArray(bound)) {
+          for (const id of bound) {
+            if (!skillIdsToFetch.includes(id)) {
+              skillIdsToFetch.push(id);
+            }
+          }
+        }
+      } catch {
+        // Invalid JSON, skip
+      }
+    }
+
+    let skillSection = '';
+    if (skillIdsToFetch.length > 0) {
+      const skills = await db.skill.findMany({
+        where: { id: { in: skillIdsToFetch } },
+      });
+
+      if (skills.length > 0) {
+        const skillLines = skills.map((s) => {
+          const cat = s.category || 'general';
+          const desc = s.description || '';
+          return `- **${s.name}**: ${desc} (${cat})\n  Content: ${s.content}`;
+        }).join('\n\n');
+
+        skillSection = `\n\n## Available Skills\nThe following skills are loaded and available to you:\n${skillLines}\n\nYou should use these skills when relevant to the user's request. Tell the user about available skills if they ask.`;
+      }
+    }
+
+    // ── Inject agent persona and soul into system prompt ──────
+    let personaSection = '';
+    if (agentData?.agentMd) {
+      personaSection += `\n\n## Agent Persona (agent.md)\n${agentData.agentMd}`;
+    }
+    if (agentData?.soulPrompt) {
+      personaSection += `\n\n## Soul/Core Personality (soul.md)\n${agentData.soulPrompt}`;
+    }
+
+    // Assemble the final system prompt
+    const finalSystemPrompt = systemPrompt + personaSection + skillSection;
+
     const modelInfo = getModelInfo(effectiveModelId);
 
     // ── Build messages array ────────────────────────────────────
-    const messages: LLMMessage[] = [{ role: 'system', content: systemPrompt }];
+    const messages: LLMMessage[] = [{ role: 'system', content: finalSystemPrompt }];
 
     let dbConversationId: string | null = null;
     if (conversationId) {

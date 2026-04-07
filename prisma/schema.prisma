@@ -23,6 +23,9 @@ model Agent {
   model       String   @default("gpt-4")    // gpt-4, claude-3, etc.
   status      String   @default("active")   // active, inactive, archived
   config      String   @default("{}")       // JSON: { temperature, maxTokens, topP, ... }
+  soulPrompt  String   @default("")         // Soul/personality prompt (soul.md content)
+  agentMd     String   @default("")         // Agent markdown (agent.md content)
+  boundSkills String   @default("[]")       // JSON array of skill IDs bound to this agent
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

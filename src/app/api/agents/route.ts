@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   try {
     await ensureDatabase();
     const body = await req.json();
-    const { name, description, type, systemPrompt, provider, model, status, config } = body;
+    const { name, description, type, systemPrompt, provider, model, status, config, soulPrompt, agentMd, boundSkills } = body;
 
     if (!name || !systemPrompt) {
       return NextResponse.json(
@@ -65,6 +65,9 @@ export async function POST(req: NextRequest) {
         model: model || 'gpt-4',
         status: status || 'active',
         config: config ? JSON.stringify(config) : '{}',
+        soulPrompt: soulPrompt || '',
+        agentMd: agentMd || '',
+        boundSkills: boundSkills ? JSON.stringify(boundSkills) : '[]',
       },
     });
 
