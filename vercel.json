@@ -2,6 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "buildCommand": "prisma generate && next build",
-  "installCommand": "bun install",
+  "installCommand": "npm install",
   "outputDirectory": ".next"
 }
