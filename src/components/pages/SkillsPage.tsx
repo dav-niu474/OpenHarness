@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   BookOpen,
   Search,
@@ -27,12 +27,15 @@ import {
   Zap,
   FolderSync,
   ListChecks,
+  Loader2,
+  AlertTriangle,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
 import {
   Sheet,
@@ -41,408 +44,152 @@ import {
   SheetTitle,
   SheetDescription,
 } from '@/components/ui/sheet';
+import { toast } from '@/hooks/use-toast';
 
 // ── Types ──────────────────────────────────────────────────────
 
-type SkillCategory = 'Development' | 'Document' | 'Research' | 'Communication';
+interface SkillFromAPI {
+  id: string;
+  name: string;
+  description: string | null;
+  content: string;
+  category: string;
+  isLoaded: boolean;
+  createdAt: string;
+}
 
 interface SkillItem {
   id: string;
   name: string;
-  category: SkillCategory;
+  category: string;
   description: string;
-  fullDescription: string;
-  whenToUse: string;
-  workflow: string[];
-  plugins: string[];
-  loaded: boolean;
-  version: string;
-  author: string;
+  content: string;
+  isLoaded: boolean;
   icon: React.ReactNode;
 }
+
+type SkillCategory = 'Development' | 'Research' | 'Communication' | 'Document' | 'General';
 
 // ── Category Config ────────────────────────────────────────────
 
 const categoryConfig: Record<
-  SkillCategory,
-  { color: string; bg: string; border: string; badge: string }
+  string,
+  { color: string; bg: string; border: string; badge: string; dotColor: string }
 > = {
-  Development: {
+  development: {
     color: 'text-emerald-600',
     bg: 'bg-emerald-500/10',
     border: 'border-l-emerald-500',
     badge: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    dotColor: 'bg-emerald-500',
   },
-  Document: {
+  document: {
     color: 'text-amber-600',
     bg: 'bg-amber-500/10',
     border: 'border-l-amber-500',
     badge: 'bg-amber-50 text-amber-700 border-amber-200',
+    dotColor: 'bg-amber-500',
   },
-  Research: {
+  research: {
     color: 'text-sky-600',
     bg: 'bg-sky-500/10',
     border: 'border-l-sky-500',
     badge: 'bg-sky-50 text-sky-700 border-sky-200',
+    dotColor: 'bg-sky-500',
   },
-  Communication: {
+  communication: {
     color: 'text-violet-600',
     bg: 'bg-violet-500/10',
     border: 'border-l-violet-500',
     badge: 'bg-violet-50 text-violet-700 border-violet-200',
+    dotColor: 'bg-violet-500',
+  },
+  general: {
+    color: 'text-zinc-600',
+    bg: 'bg-zinc-500/10',
+    border: 'border-l-zinc-500',
+    badge: 'bg-zinc-50 text-zinc-700 border-zinc-200',
+    dotColor: 'bg-zinc-500',
   },
 };
 
-// ── Mock Data ──────────────────────────────────────────────────
+const CATEGORY_DISPLAY: Record<string, string> = {
+  development: 'Development',
+  document: 'Document',
+  research: 'Research',
+  communication: 'Communication',
+  general: 'General',
+};
 
-const allSkills: SkillItem[] = [
-  // Development Skills
-  {
-    id: 'commit',
-    name: 'commit',
-    category: 'Development',
-    description:
-      'Create clean, well-structured git commits with proper messages, grouping related changes and following conventional commit conventions.',
-    fullDescription:
-      'The commit skill helps agents create meaningful, well-structured git commits. It analyzes staged changes, generates conventional commit messages, groups related file changes, and ensures commits are atomic and descriptive.',
-    whenToUse:
-      'Use when you have finished making code changes and need to commit them to git. Especially useful for complex changes spanning multiple files.',
-    workflow: [
-      'Review all staged and unstaged changes',
-      'Analyze the nature of changes (feature, fix, refactor, etc.)',
-      'Group related changes into logical commits',
-      'Generate conventional commit messages',
-      'Stage appropriate files and create commits',
-    ],
-    plugins: ['bash', 'read', 'grep'],
-    loaded: true,
-    version: '1.2.0',
-    author: 'OpenHarness Core',
-    icon: <GitCommitHorizontal className="w-4 h-4" />,
-  },
-  {
-    id: 'review',
-    name: 'review',
-    category: 'Development',
-    description:
-      'Review code for bugs, security issues, performance problems, and code quality. Provides actionable feedback with severity ratings.',
-    fullDescription:
-      'Performs comprehensive code review including bug detection, security vulnerability scanning, performance analysis, and adherence to best practices. Returns structured feedback with severity ratings and suggested fixes.',
-    whenToUse:
-      'Use when you need to review code before merging, after implementation, or when mentoring. Also useful for auditing existing codebases.',
-    workflow: [
-      'Read and parse the target code files',
-      'Check for common bug patterns and anti-patterns',
-      'Scan for security vulnerabilities',
-      'Analyze performance characteristics',
-      'Generate structured review report with severity ratings',
-    ],
-    plugins: ['read', 'grep', 'glob'],
-    loaded: true,
-    version: '2.1.0',
-    author: 'OpenHarness Core',
-    icon: <Eye className="w-4 h-4" />,
-  },
-  {
-    id: 'debug',
-    name: 'debug',
-    category: 'Development',
-    description:
-      'Diagnose and fix bugs systematically using log analysis, stack trace parsing, and hypothesis-driven debugging methodology.',
-    fullDescription:
-      'Applies systematic debugging methodology to identify and fix bugs. Includes log analysis, stack trace parsing, state inspection, and hypothesis-driven investigation. Creates reproduction steps and validates fixes.',
-    whenToUse:
-      'Use when encountering errors, unexpected behavior, or when users report bugs. Particularly effective for complex, multi-system issues.',
-    workflow: [
-      'Gather error messages, logs, and stack traces',
-      'Identify the failing component and code path',
-      'Form hypotheses about root cause',
-      'Test hypotheses by reading code and running diagnostics',
-      'Implement and validate the fix',
-    ],
-    plugins: ['bash', 'read', 'grep', 'edit'],
-    loaded: true,
-    version: '1.5.0',
-    author: 'OpenHarness Core',
-    icon: <Bug className="w-4 h-4" />,
-  },
-  {
-    id: 'plan',
-    name: 'plan',
-    category: 'Development',
-    description:
-      'Design comprehensive implementation plans before coding, breaking down complex tasks into manageable steps with clear dependencies.',
-    fullDescription:
-      'Creates detailed implementation plans for complex features. Breaks down work into sequential and parallel tasks, identifies dependencies, estimates effort, and outlines the technical approach with architecture decisions.',
-    whenToUse:
-      'Use before starting any non-trivial implementation. Essential for features requiring multiple files, architectural changes, or cross-component work.',
-    workflow: [
-      'Analyze requirements and constraints',
-      'Identify affected components and files',
-      'Break down into implementation tasks',
-      'Map dependencies between tasks',
-      'Create step-by-step execution plan with checkpoints',
-    ],
-    plugins: ['glob', 'read', 'grep'],
-    loaded: false,
-    version: '1.3.0',
-    author: 'OpenHarness Core',
-    icon: <Map className="w-4 h-4" />,
-  },
-  {
-    id: 'test',
-    name: 'test',
-    category: 'Development',
-    description:
-      'Write and run comprehensive tests for code including unit tests, integration tests, and end-to-end tests with proper assertions.',
-    fullDescription:
-      'Generates and executes tests for code using appropriate testing frameworks. Creates unit tests, integration tests, and end-to-end tests. Ensures proper coverage of edge cases, error handling, and happy paths.',
-    whenToUse:
-      'Use after implementing features to ensure correctness. Also useful for adding tests to existing untested code or when debugging failing tests.',
-    workflow: [
-      'Analyze the code to understand expected behavior',
-      'Identify test cases including edge cases',
-      'Generate test code with proper assertions',
-      'Run tests and analyze results',
-      'Fix any failing tests and iterate',
-    ],
-    plugins: ['bash', 'read', 'write', 'edit'],
-    loaded: true,
-    version: '1.4.0',
-    author: 'OpenHarness Core',
-    icon: <TestTube2 className="w-4 h-4" />,
-  },
-  {
-    id: 'simplify',
-    name: 'simplify',
-    category: 'Development',
-    description:
-      'Refactor code to be simpler, more maintainable, and more readable while preserving behavior. Applies clean code principles.',
-    fullDescription:
-      'Refactors code for improved readability and maintainability. Applies clean code principles, removes duplication, simplifies complex logic, improves naming, and ensures consistent patterns across the codebase.',
-    whenToUse:
-      'Use when code is overly complex, hard to understand, or during regular maintenance. Ideal for improving code quality without changing functionality.',
-    workflow: [
-      'Analyze code complexity and identify issues',
-      'Propose specific refactoring improvements',
-      'Apply changes incrementally with validation',
-      'Ensure all tests still pass',
-      'Document significant structural changes',
-    ],
-    plugins: ['read', 'edit', 'bash', 'grep'],
-    loaded: false,
-    version: '1.1.0',
-    author: 'OpenHarness Core',
-    icon: <Minimize2 className="w-4 h-4" />,
-  },
+// ── Icon Mapping ───────────────────────────────────────────────
 
-  // Document Skills
-  {
-    id: 'pdf',
-    name: 'pdf',
-    category: 'Document',
-    description:
-      'PDF processing capabilities including text extraction, form filling, page manipulation, merging, and splitting documents.',
-    fullDescription:
-      'Comprehensive PDF manipulation toolkit powered by pypdf. Supports text extraction, form filling, page reordering, merging multiple PDFs, splitting documents, and adding annotations. Handles both text-based and scanned PDFs.',
-    whenToUse:
-      'Use when you need to read, modify, create, or process PDF files. Common scenarios include extracting data from PDFs, filling forms, or generating reports.',
-    workflow: [
-      'Open and parse the PDF document',
-      'Perform the requested operation (extract, merge, fill, etc.)',
-      'Process pages or content as needed',
-      'Save or return the modified document',
-    ],
-    plugins: ['read', 'write', 'bash'],
-    loaded: true,
-    version: '2.0.0',
-    author: 'OpenHarness Docs',
-    icon: <FileText className="w-4 h-4" />,
-  },
-  {
-    id: 'xlsx',
-    name: 'xlsx',
-    category: 'Document',
-    description:
-      'Excel spreadsheet operations including reading, writing, formatting, formula application, and data visualization within workbooks.',
-    fullDescription:
-      'Full Excel file support including reading/writing .xlsx, .xlsm, .csv files. Supports cell formatting, formulas, charts, pivot tables, conditional formatting, and data validation. Provides both row-by-row and batch processing modes.',
-    whenToUse:
-      'Use when working with spreadsheet data, creating reports, processing CSV files, or generating formatted Excel output with charts and formulas.',
-    workflow: [
-      'Open or create the spreadsheet file',
-      'Read existing data or set up structure',
-      'Apply formatting, formulas, or data operations',
-      'Save the workbook with all changes',
-    ],
-    plugins: ['read', 'write', 'bash'],
-    loaded: true,
-    version: '1.8.0',
-    author: 'OpenHarness Docs',
-    icon: <Table2 className="w-4 h-4" />,
-  },
-  {
-    id: 'docx',
-    name: 'docx',
-    category: 'Document',
-    description:
-      'Word document creation and editing with support for formatting, styles, tables, images, headers/footers, and tracked changes.',
-    fullDescription:
-      'Creates and modifies Word documents (.docx) with full formatting support. Includes styled text, tables, images, headers/footers, page numbers, tracked changes, comments, and sections. Preserves existing formatting when editing.',
-    whenToUse:
-      'Use when creating professional documents, reports, or when editing existing Word files. Supports both new document creation and modification of existing documents.',
-    workflow: [
-      'Create or load the document template',
-      'Add or modify content with proper formatting',
-      'Apply styles, tables, and media elements',
-      'Save the final document',
-    ],
-    plugins: ['read', 'write'],
-    loaded: false,
-    version: '1.6.0',
-    author: 'OpenHarness Docs',
-    icon: <FilePenLine className="w-4 h-4" />,
-  },
-  {
-    id: 'pptx',
-    name: 'pptx',
-    category: 'Document',
-    description:
-      'Presentation creation and editing with slide layouts, animations, transitions, charts, images, and speaker notes.',
-    fullDescription:
-      'Creates and modifies PowerPoint presentations with rich content support. Includes slide layouts, master slides, animations, transitions, embedded charts and images, speaker notes, and theme customization.',
-    whenToUse:
-      'Use when creating presentations, pitch decks, or when modifying existing PowerPoint files. Supports professional slide design with themes and animations.',
-    workflow: [
-      'Create or load the presentation',
-      'Design slides with layouts and themes',
-      'Add content, media, and animations',
-      'Add speaker notes and save',
-    ],
-    plugins: ['read', 'write'],
-    loaded: false,
-    version: '1.4.0',
-    author: 'OpenHarness Docs',
-    icon: <Presentation className="w-4 h-4" />,
-  },
+const SKILL_ICONS: Record<string, React.ReactNode> = {
+  commit: <GitCommitHorizontal className="w-4 h-4" />,
+  review: <Eye className="w-4 h-4" />,
+  debug: <Bug className="w-4 h-4" />,
+  plan: <Map className="w-4 h-4" />,
+  test: <TestTube2 className="w-4 h-4" />,
+  simplify: <Minimize2 className="w-4 h-4" />,
+  pdf: <FileText className="w-4 h-4" />,
+  xlsx: <Table2 className="w-4 h-4" />,
+  docx: <FilePenLine className="w-4 h-4" />,
+  pptx: <Presentation className="w-4 h-4" />,
+  'web-search': <Globe className="w-4 h-4" />,
+  'web-reader': <BookOpenCheck className="w-4 h-4" />,
+  research: <Microscope className="w-4 h-4" />,
+  summarize: <MessageSquareQuote className="w-4 h-4" />,
+  translate: <Languages className="w-4 h-4" />,
+};
 
-  // Research Skills
-  {
-    id: 'web-search',
-    name: 'web-search',
-    category: 'Research',
-    description:
-      'Search the web for current information, news, documentation, and resources. Returns structured results with URLs and snippets.',
-    fullDescription:
-      'Performs web searches across multiple sources to find current, relevant information. Returns structured results including URLs, page titles, snippets, hostnames, and relevance rankings. Supports advanced search operators and result filtering.',
-    whenToUse:
-      'Use when you need up-to-date information, current events, latest documentation, or any data that may have changed since training cutoff.',
-    workflow: [
-      'Formulate effective search queries',
-      'Execute searches with appropriate parameters',
-      'Parse and rank results by relevance',
-      'Return structured results with key information',
-    ],
-    plugins: ['web-search', 'web-fetch'],
-    loaded: true,
-    version: '2.2.0',
-    author: 'OpenHarness Research',
-    icon: <Globe className="w-4 h-4" />,
-  },
-  {
-    id: 'web-reader',
-    name: 'web-reader',
-    category: 'Research',
-    description:
-      'Read and extract clean content from web pages including articles, documentation, and blog posts with metadata extraction.',
-    fullDescription:
-      'Fetches and intelligently extracts content from web pages. Removes boilerplate, ads, and navigation elements to return clean article text. Also extracts metadata like title, author, publication date, and main images.',
-    whenToUse:
-      'Use when you need to read the content of specific web pages, articles, or documentation. Ideal for processing URLs returned by web search.',
-    workflow: [
-      'Fetch the web page content',
-      'Parse HTML and extract main content',
-      'Clean up boilerplate and formatting',
-      'Extract metadata and structure',
-      'Return clean content with metadata',
-    ],
-    plugins: ['web-fetch'],
-    loaded: true,
-    version: '1.5.0',
-    author: 'OpenHarness Research',
-    icon: <BookOpenCheck className="w-4 h-4" />,
-  },
-  {
-    id: 'research',
-    name: 'research',
-    category: 'Research',
-    description:
-      'Deep research and analysis combining web search, content extraction, synthesis, and structured report generation on any topic.',
-    fullDescription:
-      'Performs in-depth research on any topic by combining web search, content reading, cross-referencing, and analysis. Generates comprehensive research reports with citations, methodology notes, and confidence ratings for findings.',
-    whenToUse:
-      'Use for complex research tasks that require multiple sources, deep analysis, and structured output. Ideal for market research, technical analysis, or academic topics.',
-    workflow: [
-      'Define research scope and questions',
-      'Search multiple sources systematically',
-      'Read and extract key information',
-      'Cross-reference and validate findings',
-      'Synthesize into structured research report',
-    ],
-    plugins: ['web-search', 'web-fetch', 'bash'],
-    loaded: false,
-    version: '1.0.0',
-    author: 'OpenHarness Research',
-    icon: <Microscope className="w-4 h-4" />,
-  },
+function getSkillIcon(name: string): React.ReactNode {
+  return SKILL_ICONS[name.toLowerCase()] || <BookOpen className="w-4 h-4" />;
+}
 
-  // Communication Skills
-  {
-    id: 'summarize',
-    name: 'summarize',
-    category: 'Communication',
-    description:
-      'Summarize long texts, documents, conversations, or code changes into concise, well-structured summaries with key takeaways.',
-    fullDescription:
-      'Creates concise summaries of long-form content while preserving key information, context, and actionable insights. Supports multiple formats including bullet points, executive summaries, and detailed outlines with section highlights.',
-    whenToUse:
-      'Use when you need to condense long documents, meeting notes, email threads, or code changes into digestible summaries for quick consumption.',
-    workflow: [
-      'Analyze the full content structure',
-      'Identify key points and main themes',
-      'Extract critical details and data points',
-      'Generate concise summary with key takeaways',
-      'Format for the target audience',
-    ],
-    plugins: ['read'],
-    loaded: true,
-    version: '1.3.0',
-    author: 'OpenHarness Comms',
-    icon: <MessageSquareQuote className="w-4 h-4" />,
-  },
-  {
-    id: 'translate',
-    name: 'translate',
-    category: 'Communication',
-    description:
-      'Translate text between languages with context-aware translations preserving technical terms, tone, and cultural nuances.',
-    fullDescription:
-      'Provides high-quality translations between languages with awareness of context, technical terminology, and cultural nuances. Preserves formatting, code blocks, and technical terms. Supports both formal and informal registers.',
-    whenToUse:
-      'Use when you need to translate documentation, user-facing content, code comments, or any text between languages with accuracy and context preservation.',
-    workflow: [
-      'Detect source language and understand context',
-      'Translate while preserving technical terms',
-      'Adapt for target audience and cultural context',
-      'Review and refine the translation quality',
-    ],
-    plugins: [],
-    loaded: false,
-    version: '1.2.0',
-    author: 'OpenHarness Comms',
-    icon: <Languages className="w-4 h-4" />,
-  },
-];
+// ── Loading Skeleton ───────────────────────────────────────────
+
+function SkillCardSkeleton() {
+  return (
+    <Card className="py-0 shadow-sm border-l-4 border-l-zinc-200" style={{ gap: 0 }}>
+      <CardContent className="p-4 flex flex-col gap-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <Skeleton className="w-8 h-8 rounded-lg" />
+            <div className="flex flex-col gap-1">
+              <Skeleton className="w-20 h-4 rounded" />
+              <Skeleton className="w-16 h-4 rounded" />
+            </div>
+          </div>
+          <Skeleton className="w-8 h-8 rounded-lg" />
+        </div>
+        <Skeleton className="w-full h-3 rounded" />
+        <Skeleton className="w-full h-3 rounded" />
+        <Skeleton className="w-2/3 h-3 rounded" />
+        <div className="flex items-center justify-between">
+          <Skeleton className="w-16 h-5 rounded-full" />
+          <Skeleton className="w-4 h-4 rounded" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Helpers ────────────────────────────────────────────────────
+
+function mapApiSkillToItem(skill: SkillFromAPI): SkillItem {
+  return {
+    id: skill.id,
+    name: skill.name,
+    category: skill.category,
+    description: skill.description || 'No description available.',
+    content: skill.content,
+    isLoaded: skill.isLoaded,
+    icon: getSkillIcon(skill.name),
+  };
+}
+
+function getCategoryLabel(cat: string): string {
+  return CATEGORY_DISPLAY[cat] || cat.charAt(0).toUpperCase() + cat.slice(1);
+}
 
 // ── Component ──────────────────────────────────────────────────
 
@@ -450,47 +197,177 @@ export default function SkillsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSkill, setSelectedSkill] = useState<SkillItem | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [skillStates, setSkillStates] = useState<Record<string, boolean>>(() => {
-    const initial: Record<string, boolean> = {};
-    allSkills.forEach((s) => {
-      initial[s.id] = s.loaded;
-    });
-    return initial;
-  });
+  const [skills, setSkills] = useState<SkillFromAPI[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
 
+  // Fetch skills from API
+  const fetchSkills = useCallback(async (category?: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (category && category !== 'All') {
+        params.set('category', category);
+      }
+      const res = await fetch(`/api/skills${params.toString() ? `?${params.toString()}` : ''}`);
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        setSkills(json.data);
+      } else {
+        setError(json.error || 'Failed to load skills');
+        setSkills([]);
+      }
+    } catch {
+      setError('Network error. Please try again.');
+      setSkills([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSkills();
+  }, [fetchSkills]);
+
+  // Map API skills to UI items
+  const allSkillItems = useMemo(() => skills.map(mapApiSkillToItem), [skills]);
+
+  // Client-side search
   const filteredSkills = useMemo(() => {
-    if (!searchQuery.trim()) return allSkills;
+    if (!searchQuery.trim()) return allSkillItems;
     const q = searchQuery.toLowerCase();
-    return allSkills.filter(
+    return allSkillItems.filter(
       (s) =>
         s.name.toLowerCase().includes(q) ||
         s.description.toLowerCase().includes(q) ||
         s.category.toLowerCase().includes(q)
     );
-  }, [searchQuery]);
+  }, [allSkillItems, searchQuery]);
 
-  const totalSkills = allSkills.length;
-  const loadedCount = Object.values(skillStates).filter(Boolean).length;
+  // Group skills by category
+  const groupedSkills = useMemo(() => {
+    const groups: Record<string, SkillItem[]> = {};
+    filteredSkills.forEach((s) => {
+      const key = s.category;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(s);
+    });
+    return groups;
+  }, [filteredSkills]);
 
-  const toggleSkill = (skillId: string) => {
-    setSkillStates((prev) => ({ ...prev, [skillId]: !prev[skillId] }));
+  const totalSkills = skills.length;
+  const loadedCount = skills.filter((s) => s.isLoaded).length;
+
+  // Available category filters
+  const availableCategories = useMemo(() => {
+    const cats = new Set(skills.map((s) => s.category));
+    return Array.from(cats).sort();
+  }, [skills]);
+
+  // Category filter handler
+  const handleCategoryFilter = (cat: string) => {
+    fetchSkills(cat === 'All' ? undefined : cat);
+  };
+
+  // Toggle skill loaded state with optimistic UI
+  const toggleSkill = async (skillId: string, currentState: boolean) => {
+    const newState = !currentState;
+
+    // Optimistic update
+    setSkills((prev) =>
+      prev.map((s) => (s.id === skillId ? { ...s, isLoaded: newState } : s))
+    );
+    setTogglingIds((prev) => new Set(prev).add(skillId));
+
+    // Update selected skill in sheet if open
+    if (selectedSkill?.id === skillId) {
+      setSelectedSkill((prev) => prev ? { ...prev, isLoaded: newState } : prev);
+    }
+
+    try {
+      const res = await fetch('/api/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: skillId, isLoaded: newState }),
+      });
+      const json = await res.json();
+
+      if (!json.success) {
+        // Revert on failure
+        setSkills((prev) =>
+          prev.map((s) => (s.id === skillId ? { ...s, isLoaded: currentState } : s))
+        );
+        if (selectedSkill?.id === skillId) {
+          setSelectedSkill((prev) => prev ? { ...prev, isLoaded: currentState } : prev);
+        }
+        toast({
+          title: 'Failed to update skill',
+          description: json.error || 'An error occurred while updating the skill.',
+          variant: 'destructive',
+        });
+      } else {
+        const skillName = skills.find((s) => s.id === skillId)?.name || 'Skill';
+        toast({
+          title: `Skill ${newState ? 'loaded' : 'unloaded'}`,
+          description: `${skillName} has been ${newState ? 'loaded' : 'unloaded'}.`,
+        });
+      }
+    } catch {
+      // Revert on network error
+      setSkills((prev) =>
+        prev.map((s) => (s.id === skillId ? { ...s, isLoaded: currentState } : s))
+      );
+      if (selectedSkill?.id === skillId) {
+        setSelectedSkill((prev) => prev ? { ...prev, isLoaded: currentState } : prev);
+      }
+      toast({
+        title: 'Network error',
+        description: 'Could not reach the server. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(skillId);
+        return next;
+      });
+    }
   };
 
   const openDetail = (skill: SkillItem) => {
-    setSelectedSkill({ ...skill, loaded: skillStates[skill.id] });
+    setSelectedSkill(skill);
     setSheetOpen(true);
   };
 
-  const groupedSkills = useMemo(() => {
-    const groups: Record<SkillCategory, SkillItem[]> = {
-      Development: [],
-      Document: [],
-      Research: [],
-      Communication: [],
-    };
-    filteredSkills.forEach((s) => groups[s.category].push(s));
-    return groups;
-  }, [filteredSkills]);
+  // Parse content into structured sections for display
+  const parseSkillContent = (content: string) => {
+    const lines = content.split('\n').filter((l) => l.trim());
+    const sections: { heading: string; items: string[] }[] = [];
+    let currentSection: { heading: string; items: string[] } | null = null;
+
+    for (const line of lines) {
+      if (line.startsWith('## ')) {
+        if (currentSection) sections.push(currentSection);
+        currentSection = { heading: line.replace('## ', '').trim(), items: [] };
+      } else if (line.startsWith('# ')) {
+        if (currentSection) sections.push(currentSection);
+        currentSection = { heading: line.replace('# ', '').trim(), items: [] };
+      } else if (currentSection) {
+        const cleaned = line
+          .replace(/^[-*]\s+/, '')
+          .replace(/^\d+\.\s+/, '')
+          .replace(/^```\w*$/, '')
+          .trim();
+        if (cleaned) {
+          currentSection.items.push(cleaned);
+        }
+      }
+    }
+    if (currentSection) sections.push(currentSection);
+    return sections;
+  };
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -517,33 +394,82 @@ export default function SkillsPage() {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
-          <Button className="shrink-0">
-            <Plus className="w-4 h-4" />
-            Load Skill
-          </Button>
         </div>
       </div>
 
+      {/* Category Filter */}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => handleCategoryFilter('All')}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors border bg-white text-muted-foreground border-zinc-200 hover:border-emerald-400 hover:text-foreground"
+        >
+          All
+          <span className="text-xs opacity-70">({totalSkills})</span>
+        </button>
+        {availableCategories.map((cat) => (
+          <button
+            key={cat}
+            onClick={() => handleCategoryFilter(cat)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors border bg-white text-muted-foreground border-zinc-200 hover:border-emerald-400 hover:text-foreground"
+          >
+            {getCategoryLabel(cat)}
+            <span className="text-xs opacity-70">
+              ({skills.filter((s) => s.category === cat).length})
+            </span>
+          </button>
+        ))}
+      </div>
+
       {/* Skills Grid */}
-      <ScrollArea className="h-[calc(100vh-200px)]">
+      <ScrollArea className="h-[calc(100vh-240px)]">
         <div className="pr-4 flex flex-col gap-8">
-          {(Object.entries(groupedSkills) as [SkillCategory, SkillItem[]][]).map(
-            ([category, skills]) =>
-              skills.length > 0 && (
+          {isLoading ? (
+            <div className="flex flex-col gap-8">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i}>
+                  <div className="flex items-center gap-2 mb-4">
+                    <Skeleton className="w-2 h-2 rounded-full" />
+                    <Skeleton className="w-32 h-4 rounded" />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {Array.from({ length: 3 }).map((_, j) => (
+                      <SkillCardSkeleton key={j} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : error ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-3">
+              <AlertTriangle className="w-10 h-10 text-amber-500" />
+              <p className="text-sm font-medium text-foreground">Unable to load skills</p>
+              <p className="text-sm text-muted-foreground max-w-md text-center">{error}</p>
+              <button
+                onClick={() => fetchSkills()}
+                className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+              >
+                <Loader2 className="w-3.5 h-3.5" />
+                Retry
+              </button>
+            </div>
+          ) : (
+            Object.entries(groupedSkills).map(([category, categorySkills]) => {
+              const config = categoryConfig[category] || categoryConfig.general;
+              return (
                 <div key={category}>
                   <div className="flex items-center gap-2 mb-4">
-                    <div className={`w-2 h-2 rounded-full ${categoryConfig[category].bg.replace('/10', '/100')}`} />
+                    <div className={`w-2 h-2 rounded-full ${config.dotColor}`} />
                     <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-                      {category} Skills
+                      {getCategoryLabel(category)} Skills
                     </h2>
                     <Badge variant="outline" className="text-[10px]">
-                      {skills.length}
+                      {categorySkills.length}
                     </Badge>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {skills.map((skill) => {
-                      const config = categoryConfig[skill.category];
-                      const isLoaded = skillStates[skill.id];
+                    {categorySkills.map((skill) => {
+                      const isToggling = togglingIds.has(skill.id);
+                      const currentLoaded = skill.isLoaded;
                       return (
                         <Card
                           key={skill.id}
@@ -571,23 +497,26 @@ export default function SkillsPage() {
                                     variant="outline"
                                     className={`text-[10px] mt-0.5 ${config.badge}`}
                                   >
-                                    {skill.category}
+                                    {getCategoryLabel(skill.category)}
                                   </Badge>
                                 </div>
                               </div>
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  toggleSkill(skill.id);
+                                  toggleSkill(skill.id, currentLoaded);
                                 }}
+                                disabled={isToggling}
                                 className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors border ${
-                                  isLoaded
+                                  currentLoaded
                                     ? 'bg-emerald-50 border-emerald-200 text-emerald-600 hover:bg-emerald-100'
                                     : 'bg-white border-zinc-200 text-zinc-400 hover:bg-zinc-50'
                                 }`}
-                                title={isLoaded ? 'Unload skill' : 'Load skill'}
+                                title={currentLoaded ? 'Unload skill' : 'Load skill'}
                               >
-                                {isLoaded ? (
+                                {isToggling ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : currentLoaded ? (
                                   <Check className="w-4 h-4" />
                                 ) : (
                                   <Plus className="w-4 h-4" />
@@ -603,7 +532,7 @@ export default function SkillsPage() {
                             {/* Footer */}
                             <div className="flex items-center justify-between pt-1">
                               <div className="flex items-center gap-1.5">
-                                {isLoaded ? (
+                                {currentLoaded ? (
                                   <Badge className="bg-emerald-500/10 text-emerald-700 border-emerald-200 text-[10px]">
                                     <Zap className="w-3 h-3 mr-0.5" />
                                     Loaded
@@ -622,10 +551,11 @@ export default function SkillsPage() {
                     })}
                   </div>
                 </div>
-              )
+              );
+            })
           )}
 
-          {filteredSkills.length === 0 && (
+          {!isLoading && !error && filteredSkills.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 gap-3">
               <Search className="w-10 h-10 text-muted-foreground/40" />
               <p className="text-sm text-muted-foreground">
@@ -644,17 +574,17 @@ export default function SkillsPage() {
               <SheetHeader className="mb-6">
                 <div className="flex items-center gap-3">
                   <div
-                    className={`flex items-center justify-center w-10 h-10 rounded-xl ${categoryConfig[selectedSkill.category].bg} ${categoryConfig[selectedSkill.category].color}`}
+                    className={`flex items-center justify-center w-10 h-10 rounded-xl ${categoryConfig[selectedSkill.category]?.bg || categoryConfig.general.bg} ${categoryConfig[selectedSkill.category]?.color || categoryConfig.general.color}`}
                   >
                     {selectedSkill.icon}
                   </div>
                   <div>
                     <SheetTitle className="text-lg flex items-center gap-2">
                       {selectedSkill.name}
-                      <Sparkles className={`w-4 h-4 ${categoryConfig[selectedSkill.category].color} opacity-60`} />
+                      <Sparkles className={`w-4 h-4 ${categoryConfig[selectedSkill.category]?.color || categoryConfig.general.color} opacity-60`} />
                     </SheetTitle>
                     <SheetDescription className="text-xs mt-1">
-                      v{selectedSkill.version} · {selectedSkill.author}
+                      {getCategoryLabel(selectedSkill.category)}
                     </SheetDescription>
                   </div>
                 </div>
@@ -665,11 +595,11 @@ export default function SkillsPage() {
                 <div className="flex items-center gap-2">
                   <Badge
                     variant="outline"
-                    className={`${categoryConfig[selectedSkill.category].badge}`}
+                    className={categoryConfig[selectedSkill.category]?.badge || categoryConfig.general.badge}
                   >
-                    {selectedSkill.category}
+                    {getCategoryLabel(selectedSkill.category)}
                   </Badge>
-                  {skillStates[selectedSkill.id] ? (
+                  {selectedSkill.isLoaded ? (
                     <Badge className="bg-emerald-500/10 text-emerald-700 border-emerald-200">
                       <Zap className="w-3 h-3 mr-1" />
                       Loaded
@@ -685,66 +615,57 @@ export default function SkillsPage() {
                 <div>
                   <h3 className="text-sm font-semibold mb-2">Description</h3>
                   <p className="text-sm text-muted-foreground leading-relaxed">
-                    {selectedSkill.fullDescription}
+                    {selectedSkill.description}
                   </p>
                 </div>
 
                 <Separator />
 
-                {/* When to Use */}
-                <div>
-                  <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                    <FolderSync className="w-4 h-4 text-emerald-500" />
-                    When to Use
-                  </h3>
-                  <p className="text-sm text-muted-foreground leading-relaxed">
-                    {selectedSkill.whenToUse}
-                  </p>
-                </div>
-
-                <Separator />
-
-                {/* Workflow */}
+                {/* Skill Content */}
                 <div>
                   <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
                     <ListChecks className="w-4 h-4 text-emerald-500" />
-                    Workflow
+                    Skill Content
                   </h3>
-                  <ol className="flex flex-col gap-2">
-                    {selectedSkill.workflow.map((step, i) => (
-                      <li key={i} className="flex items-start gap-3">
-                        <span className="flex items-center justify-center w-6 h-6 rounded-full bg-emerald-500/10 text-emerald-700 text-xs font-semibold shrink-0 mt-0.5">
-                          {i + 1}
-                        </span>
-                        <span className="text-sm text-muted-foreground leading-relaxed">
-                          {step}
-                        </span>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-
-                <Separator />
-
-                {/* Compatible Plugins */}
-                <div>
-                  <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                    <Zap className="w-4 h-4 text-emerald-500" />
-                    Compatible Plugins
-                  </h3>
-                  <div className="flex flex-wrap gap-1.5">
-                    {selectedSkill.plugins.length > 0 ? (
-                      selectedSkill.plugins.map((plugin) => (
-                        <Badge key={plugin} variant="outline" className="text-xs font-mono">
-                          {plugin}
-                        </Badge>
-                      ))
-                    ) : (
-                      <span className="text-sm text-muted-foreground italic">
-                        No additional plugins required
-                      </span>
-                    )}
-                  </div>
+                  {(() => {
+                    const sections = parseSkillContent(selectedSkill.content);
+                    if (sections.length === 0) {
+                      return (
+                        <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground font-mono whitespace-pre-wrap max-h-64 overflow-y-auto">
+                          {selectedSkill.content}
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="flex flex-col gap-4">
+                        {sections.map((section, idx) => (
+                          <div key={idx}>
+                            <h4 className="text-xs font-semibold text-foreground mb-2 uppercase tracking-wider">
+                              {section.heading}
+                            </h4>
+                            {section.items.length > 0 ? (
+                              <ol className="flex flex-col gap-1.5">
+                                {section.items.map((item, i) => (
+                                  <li key={i} className="flex items-start gap-3">
+                                    <span className="flex items-center justify-center w-5 h-5 rounded-full bg-emerald-500/10 text-emerald-700 text-[10px] font-semibold shrink-0 mt-0.5">
+                                      {i + 1}
+                                    </span>
+                                    <span className="text-sm text-muted-foreground leading-relaxed">
+                                      {item}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ol>
+                            ) : (
+                              <p className="text-sm text-muted-foreground italic">
+                                No details available.
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <Separator />
@@ -752,13 +673,18 @@ export default function SkillsPage() {
                 {/* Action Button */}
                 <Button
                   className="w-full"
-                  variant={skillStates[selectedSkill.id] ? 'outline' : 'default'}
+                  variant={selectedSkill.isLoaded ? 'outline' : 'default'}
+                  disabled={togglingIds.has(selectedSkill.id)}
                   onClick={() => {
-                    toggleSkill(selectedSkill.id);
-                    setSelectedSkill({ ...selectedSkill, loaded: !skillStates[selectedSkill.id] });
+                    toggleSkill(selectedSkill.id, selectedSkill.isLoaded);
                   }}
                 >
-                  {skillStates[selectedSkill.id] ? (
+                  {togglingIds.has(selectedSkill.id) ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Updating...
+                    </>
+                  ) : selectedSkill.isLoaded ? (
                     <>
                       <X className="w-4 h-4" />
                       Unload Skill

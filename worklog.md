@@ -404,3 +404,205 @@ Successfully integrated the real AI chat API into the Playground page and resolv
 - Database seeded with 3 agents, 18 tools, 8 skills, 3 teams, 6 tasks, 7 memories, 5 permission rules
 - All API endpoints responding correctly
 - All 8 pages rendering properly
+
+---
+
+## Task ID: 2-a - full-stack-developer
+### Work Task
+Improve the Dashboard page to fetch and display live data from the backend API instead of static mock data.
+
+### Work Summary
+Successfully rewrote the DashboardPage component to replace all static mock data with live API data. All changes compile cleanly with zero lint errors, and the dev server confirms both API endpoints (`/api/stats`, `/api/agents`) return 200 OK with the page rendering correctly.
+
+**1. Live Data Fetching Architecture**
+- Implemented `useEffect` + `useCallback` pattern for data fetching on component mount
+- Parallel fetch of `/api/stats` and `/api/agents` using `Promise.all` for optimal performance
+- Defined TypeScript interfaces (`StatsData`, `ActivityEntry`, `AgentData`) matching API response shapes
+- Proper error handling with try/catch, displaying user-friendly error messages
+- `fetchData` function wrapped in `useCallback` for stable reference in dependency arrays
+
+**2. Stat Cards — Live Data**
+- Active Agents: Displays `stats.activeAgents` with trend showing total agent count
+- Available Tools: Displays `stats.availableTools` with trend showing enabled tool count
+- Running Tasks: Displays `stats.runningTasks` with trend showing total task count
+- Memory Entries: Displays `stats.totalMemories` with trend showing conversation count
+
+**3. Recent Activity — Live Data**
+- Replaced static activity list with `stats.recentActivity` array from API
+- Maps message `type` to appropriate display text and icons:
+  - `message_sent` → "sent a message" (Users icon, emerald dot)
+  - `agent_response` → "responded" (Bot icon, cyan dot)
+  - `system_event` (fallback) → "system event" (Cpu icon, violet dot)
+- Content truncated to ~80 characters with ellipsis
+- Timestamps formatted as relative time using `formatRelativeTime()` helper (e.g., "just now", "5m ago", "2h ago", "3d ago")
+- Empty state shown when no recent activity exists
+- Scrollable list with max-h-96 and custom scrollbar
+
+**4. Agent List Section (New)**
+- Cards for each agent from `/api/agents` displayed in responsive 1/2/3 column grid
+- Each card shows: agent name, description (line-clamped), type badge (color-coded: react=emerald, planning=amber, coding=teal), status badge (active=emerald, inactive=zinc, archived=amber), and footer with conversation/task/memory counts
+- Icon varies by agent type (Zap for react, Shield for planning, Cpu for coding, Bot for default)
+- Header includes "Open Playground" ghost button linking to the playground page
+- Only rendered when agents.length > 0
+
+**5. Task Distribution Visualization (New)**
+- Horizontal bar chart using colored divs showing `stats.taskDistribution`
+- Categories: pending (amber-500), in_progress (emerald-500), completed (green-500), failed (red-500)
+- Width of each segment proportional to count
+- Legend below with colored dots, labels, and counts
+- Shows success rate percentage below the bar when available
+- Empty state message when no tasks recorded
+
+**6. Loading State**
+- Full-page skeleton layout (`LoadingSkeleton` component) shown while data is being fetched
+- Skeletons match the exact layout structure: stat cards, architecture overview, agent loop, activity list, agent list, and distribution chart
+- Uses shadcn/ui `Skeleton` component for consistent pulse animation
+
+**7. Error State**
+- Dedicated `ErrorState` component with AlertTriangle icon and error message
+- "Try Again" button that re-triggers the fetch
+- Shows error message from API response when available
+
+**8. Additional Improvements**
+- Added "Refresh" button in page header to manually re-fetch data
+- System stats footer bar showing: total teams, loaded skills, active conversations, running tasks (with animated spinner)
+- Quick Actions now wired to `setActivePage()` for actual navigation (Playground, Tools, Tasks, Swarm)
+- Preserved Architecture Overview and Agent Loop Flow sections (static, as they describe system design)
+- Consistent emerald accent color scheme throughout; no blue or indigo colors
+
+**Files modified:**
+- `src/components/pages/DashboardPage.tsx` (completely rewritten)
+
+---
+
+## Task ID: 2-c - full-stack-developer
+### Work Task
+Improve the Tools Registry and Skills Manager pages to connect with live backend APIs for CRUD operations, replacing all mock data with real API data and adding loading/error states, optimistic UI, and toast notifications.
+
+### Work Summary
+Successfully rewrote both ToolsPage and SkillsPage components to replace all static mock data with live API integration. All changes compile cleanly with zero lint errors, and the dev server confirms both `/api/tools` and `/api/skills` endpoints return 200 OK.
+
+**1. Tool Registry Page (`src/components/pages/ToolsPage.tsx`) — Complete Rewrite**
+
+- **API Data Fetching**: Fetches tools from `GET /api/tools` on mount using `useEffect` + `useCallback` pattern. Category filter triggers re-fetch with `?category=` query param.
+- **Input Schema Parsing**: `parseInputSchema()` helper safely parses JSON string `inputSchema` from API into `ToolParam[]` (name, type, required indicator). Handles malformed JSON gracefully.
+- **Category Mapping**: Built `CATEGORY_DISPLAY` mapping from API category keys (file, search, agent, task, mcp, meta, system) to display labels and icons (File I/O, Search, Agent, Task, MCP, Meta, System). Groups API tools into `ToolCategory[]` dynamically.
+- **Icon Mapping**: `TOOL_ICONS` record maps tool names to appropriate lucide-react icons (e.g., "Bash" → Terminal, "Read" → FileText, "Grep" → SearchIcon). Falls back to Wrench icon for unknown tools.
+- **Permission Mode Display**: Maps API `permissionMode` values ("open", "restricted", "sandboxed") to display labels (Default, Restricted, Sandboxed) with color-coded badges (emerald, amber, rose).
+- **Enable/Disable Toggle**: Switch component calls `PUT /api/tools` with `{ id, isEnabled }`. Uses optimistic UI — updates state immediately, reverts on API failure. Shows toast notifications on success/failure.
+- **Category Filter Bar**: Dynamically generated from API data categories (not hardcoded). Each button shows category label and tool count. Clicking triggers API re-fetch with category parameter.
+- **Client-side Search**: Filters on already-fetched data by tool name and description.
+- **Loading Skeleton**: `ToolCardSkeleton` and `CategorySkeleton` components shown during data fetch using shadcn/ui Skeleton.
+- **Error State**: AlertTriangle icon with error message and "Retry" button. Handles both API errors and network failures.
+- **Removed**: All 35 mock tool definitions (350+ lines), mock ToolCategory data, hardcoded categoryFilters array.
+
+**2. Skills Manager Page (`src/components/pages/SkillsPage.tsx`) — Complete Rewrite**
+
+- **API Data Fetching**: Fetches skills from `GET /api/skills` on mount. Category filter buttons trigger re-fetch with `?category=` param.
+- **Category Mapping**: Dynamic `categoryConfig` for API categories (development, research, communication, document, general) with color, bg, border, badge, and dotColor styles.
+- **Icon Mapping**: `SKILL_ICONS` record maps skill names to lucide icons (commit → GitCommitHorizontal, debug → Bug, etc.). Falls back to BookOpen.
+- **Load/Unload Toggle**: Card toggle button and Sheet action button both call `POST /api/skills` with `{ id, isLoaded }`. Uses optimistic UI with immediate state update, reverts on failure. Shows toast notifications.
+- **Category Filter Bar**: Dynamically generated from API data. Shows category label and count per category.
+- **Client-side Search**: Filters on name, description, and category.
+- **Skill Detail Sheet**: Opens on card click showing real API data:
+  - Category and status badges (Loaded/Available) reflecting current state
+  - Description from API
+  - **Parsed Content**: `parseSkillContent()` helper parses the markdown content field into structured sections with headings and numbered items. Displays as numbered workflow steps with emerald circular indicators.
+  - Load/Unload action button with loading spinner during toggle
+- **Loading Skeleton**: `SkillCardSkeleton` component with matching card structure.
+- **Error State**: AlertTriangle with retry button for API/network failures.
+- **Removed**: All 15 mock skill definitions (400+ lines), mock SkillItem data, hardcoded category types.
+
+**3. Shared Patterns**
+- Both pages use `useEffect` + `useCallback` for data fetching
+- Optimistic UI updates with rollback on API failure for all toggle operations
+- Toast notifications via `@/hooks/use-toast` (shadcn/ui toast system)
+- `togglingIds` Set to disable toggles during in-flight API requests
+- `isLoading` / `error` state machine for loading/error/content display
+- No blue or indigo colors — emerald accent throughout
+- Consistent with existing shadcn/ui component usage patterns
+
+**Files modified:**
+- `src/components/pages/ToolsPage.tsx` (completely rewritten with API integration)
+- `src/components/pages/SkillsPage.tsx` (completely rewritten with API integration)
+
+---
+
+## Task ID: 2-d - full-stack-developer
+### Work Task
+Improve the Swarm Coordination, Memory System, and Task Manager pages to fetch and display live data from backend APIs instead of static mock data.
+
+### Work Summary
+Successfully rewrote three page components (SwarmPage, MemoryPage, TasksPage) to fetch live data from backend APIs. All changes compile cleanly with zero lint errors and the dev server confirms all API endpoints return 200 OK with pages rendering correctly.
+
+**1. Swarm Coordination Page (`src/components/pages/SwarmPage.tsx`)**
+
+Replaced static mock data with live API integration:
+
+- **Data Fetching**: Parallel `Promise.all` fetch of `/api/agents`, `/api/tasks`, and `/api/stats` on component mount using `useEffect` + `useCallback` pattern.
+- **Real Agent Display**: Maps real agent data from API into team member objects with name, status (derived from agent status + task count), color, initials, and task count from `_count.tasks`.
+- **Team Structure (Mock + Real Hybrid)**: Keeps the 3-team structure (Alpha/Beta/Delta) as mock scaffolding since no teams API exists, but populates each team's members from real agent data using name-based mapping (Alpha→Code Review Squad, Beta→Research Collective, Gamma→DevOps Pipeline). Team status derived from agent's active status.
+- **Live Task Counts**: Calculates per-team task statistics (activeTasks, tasksCompleted, totalTasks, successRate) from real task data by matching task.agentId against team member IDs.
+- **Live Stats Cards**: Top stats row shows `totalTeams` and `activeAgents` from stats API, `completed` from `taskDistribution.completed`, and `taskSuccessRate` percentage.
+- **Skeleton Loaders**: Added `StatsSkeleton` (4-card grid) and `TeamCardSkeleton` (card with avatar placeholders) shown during data loading.
+- **Error Handling**: Error state with toast notification and "Retry" button that re-triggers fetch.
+- **Preserved Features**: Agent network visualization (SVG lines + CSS positioning), team topology view, expandable detail sections, all framer-motion animations.
+
+**2. Memory System Page (`src/components/pages/MemoryPage.tsx`)**
+
+Replaced static stat numbers with live API data while keeping mock memory entries:
+
+- **Data Fetching**: Parallel fetch of `/api/stats` and `/api/agents` on mount.
+- **Live Stats Cards**: 
+  - Total Entries: Uses `stats.totalMemories` from API (real count from DB).
+  - Context Utilization: Derived from `totalMemories / 20 * 100` (scaled percentage).
+  - Avg Tokens/Session: Calculated from `totalMessages / totalConversations * 400` (estimated).
+  - Sessions Resumed: Uses `stats.totalConversations` from API.
+- **Header Subtitle**: Dynamically shows "X Memory Entries · Y Agents" from live data.
+- **Conversation History Tab**: Updated with mixed mock + real conversation data. Uses real agent names and colors. Kept mock conversations since no conversation list API exists for this page context.
+- **Persistent Memory Tab**: Kept mock memory entries (no memory list API exists). Updated entries to match seed data keys (preferred_style, current_project, search_strategy, etc.).
+- **Skeleton Loaders**: Added `StatsSkeleton` component for stat cards.
+- **Error Handling**: Error state with toast notification and "Retry" button.
+- **Preserved Features**: 3-tab layout (Persistent Memory, Session Context, Conversation History), search functionality, category badges, CLAUDE.md content display.
+
+**3. Task Manager Page (`src/components/pages/TasksPage.tsx`)**
+
+Complete rewrite with full CRUD integration:
+
+- **Status Mapping System**: Created bidirectional mapping between API statuses (`pending`, `in_progress`, `completed`, `failed`, `cancelled`) and UI statuses (`queued`, `running`, `completed`, `failed`). This allows the existing UI design to work seamlessly with the real API data model.
+- **Live Data Fetching**: 
+  - Fetches tasks from `/api/tasks` with optional status filter parameter on mount and on filter change.
+  - Fetches agents from `/api/agents` in parallel for create task dialog.
+  - `fetchTasks(statusFilter?)` callback supports filtering via `GET /api/tasks?status=in_progress`.
+- **Real Task Cards**: Each card displays data from the API — title, description, priority badge, status badge, progress bar, agent name (from `task.agent.name`), and relative timestamp (computed from `task.createdAt`).
+- **Filter Integration**: Clicking filter buttons (All/Running/Completed/Failed/Queued) triggers a new API fetch with the corresponding status parameter. Stats counts computed client-side from all fetched tasks.
+- **Stop Action**: Connected "Stop" button to `PUT /api/tasks/[id]` with `{ status: 'cancelled' }`. Shows spinner during action. Optimistic re-fetch after completion.
+- **Retry Action**: Connected "Retry" button to `PUT /api/tasks/[id]` with `{ status: 'in_progress', progress: 0 }`. Shows spinner during action. Optimistic re-fetch after completion.
+- **Create Task Dialog**: Full dialog form with:
+  - Title (required, validated)
+  - Description (optional textarea)
+  - Priority select (high/medium/low)
+  - Agent select (populated from `/api/agents`, filtered to active agents only, plus "Unassigned" option)
+  - Submits via `POST /api/tasks`
+  - Success toast notification
+  - Auto-closes and refreshes task list after creation
+- **Task Detail Dialog**: Updated to show real API data including:
+  - Agent info from `task.agent`
+  - Team info from `task.team`
+  - Progress bar with percentage
+  - Result data (parsed from JSON string) shown as formatted JSON
+  - Activity timeline using createdAt/updatedAt timestamps
+- **Skeleton Loaders**: Added `StatsSkeleton` (4 stat cards) and `TaskCardSkeleton` (task card with avatar, title, description placeholders).
+- **Error Handling**: Error state with toast notification and "Retry" button.
+- **Toast Notifications**: Using `sonner` library for success/error toasts on all actions (create, stop, retry, fetch errors).
+
+**Design Consistency:**
+- All three pages maintain consistent patterns with existing pages: emerald accent colors, shadcn/ui components, framer-motion animations, responsive layouts, and lucide-react icons.
+- No blue or indigo colors used.
+- All components are 'use client'.
+- Error/loading states handled gracefully throughout.
+
+**Files modified:**
+- `src/components/pages/SwarmPage.tsx` (completely rewritten with live API integration)
+- `src/components/pages/MemoryPage.tsx` (completely rewritten with live API integration)
+- `src/components/pages/TasksPage.tsx` (completely rewritten with full CRUD API integration)
