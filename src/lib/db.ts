@@ -96,7 +96,7 @@ async function createTables() {
     );
     CREATE TABLE IF NOT EXISTS "Tool" (
       "id" TEXT NOT NULL PRIMARY KEY,
-      "name" TEXT NOT NULL,
+      "name" TEXT NOT NULL UNIQUE,
       "description" TEXT,
       "category" TEXT NOT NULL DEFAULT 'system',
       "inputSchema" TEXT NOT NULL DEFAULT '{}',
