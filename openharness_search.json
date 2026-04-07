@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://github.com/HKUDS/OpenHarness/tree/main",
+    "name": "OpenHarness - GitHub",
+    "snippet": "Learn why Missing: agent framework",
+    "host_name": "github.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/hkuds/autoagent",
+    "name": "AutoAgent: Fully-Automated and Zero-Code LLM Agent Framework",
+    "snippet": "Natural Language-Driven Agent Building Automatically constructs and orchestrates collaborative agent systems purely through natural dialogue, ...",
+    "host_name": "github.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/HKUDS/ClawTeam",
+    "name": "HKUDS/ClawTeam - Agent Swarm Intelligence - GitHub",
+    "snippet": "The Evolution of AI Agents : Solo → Swarm ClawTeam: Let AI Agents Form Swarms, Think & Work Together, and Ship Faster.",
+    "host_name": "github.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.instagram.com/p/DWsD64NgMzA",
+    "name": "OpenHarness Python harness for agents with 43 tools https://github",
+    "snippet": "Deep Agents is an agent harness. literally packaged detailed system prompts, planning tools, sub-agents, and file system access into a single ...",
+    "host_name": "www.instagram.com",
+    "rank": 3,
+    "date": "Apr 4, 2026",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.facebook.com/seguridadentured/photos/openharnesspython-harness-for-agents-with-43-toolshttpsgithubcomhkudsopenharness/1606080091527860",
+    "name": "OpenHarness Python harness for agents with 43 tools - Facebook",
+    "snippet": "OpenHarness Python harness for agents with 43 tools https://github.com/HKUDS/OpenHarness.",
+    "host_name": "www.facebook.com",
+    "rank": 4,
+    "date": "Apr 3, 2026",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/orgs/HKUDS/repositories",
+    "name": "HKUDS repositories - GitHub",
+    "snippet": "HKUDS/OpenHarness's past year of commit activity. \"OpenHarness: Open Agent Harness\" ... \"RAG-Anything: All-in-One RAG Framework\". retrieval-augmented ...",
+    "host_name": "github.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/hkuds/auto-deep-research",
+    "name": "HKUDS/Auto-Deep-Research: \"Your Fully-Automated Personal AI",
+    "snippet": "Auto-Deep-Research is a open-source and cost-efficient alternative to OpenAI's Deep Research, based on AutoAgent framework. ✨Key Features. High Performance: ...",
+    "host_name": "github.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/darrenhinde/OpenAgentsControl",
+    "name": "darrenhinde/OpenAgentsControl: AI agent framework for  - GitHub",
+    "snippet": "AI agents that learn YOUR coding patterns and generate matching code every time. Pattern Control - Define your patterns once, AI uses them forever",
+    "host_name": "github.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://medium.com/@hungry.soul/how-we-built-an-ai-agent-harness-that-actually-does-security-6b52ca949752",
+    "name": "How We Built an AI Agent Harness That Actually Does Security",
+    "snippet": "Most multi-agent frameworks follow one of two patterns: every agent talks to every other agent (mesh — chaos at scale), or there's a rigid ...",
+    "host_name": "medium.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/code-yeongyu/oh-my-openagent",
+    "name": "code-yeongyu/oh-my-openagent: omo; the best agent harness",
+    "snippet": "Models get cheaper every month. Smarter every month. No single provider will dominate. We're building for that open market, not their walled ... Missing: HKUDS | Show results with: HKUDS",
+    "host_name": "github.com",
+    "rank": 9,
+    "date": "Apr 5, 2026",
+    "favicon": ""
+  }
+]

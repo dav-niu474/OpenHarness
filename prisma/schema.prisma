@@ -1,0 +1,206 @@
+// OpenHarness-inspired Agent System Database Schema
+// SQLite backend with Prisma ORM
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// AGENT - Core agent definitions representing AI agents in the system
+// =============================================================================
+model Agent {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  type        String   @default("react")    // react, planning, coding, custom, etc.
+  systemPrompt String
+  provider    String   @default("openai")   // openai, anthropic, local, etc.
+  model       String   @default("gpt-4")    // gpt-4, claude-3, etc.
+  status      String   @default("active")   // active, inactive, archived
+  config      String   @default("{}")       // JSON: { temperature, maxTokens, topP, ... }
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  conversations     Conversation[]
+  tasks             Task[]
+  memories          Memory[]
+  teamMemberships   TeamMember[]
+
+  @@index([status])
+  @@index([type])
+}
+
+// =============================================================================
+// TOOL - Available tools that agents can invoke
+// =============================================================================
+model Tool {
+  id             String   @id @default(cuid())
+  name           String   @unique
+  description    String?
+  category       String   @default("system")  // file, web, system, code, search, etc.
+  inputSchema    String   @default("{}")      // JSON: JSON Schema defining tool inputs
+  permissionMode String   @default("open")    // open, restricted, sandboxed
+  isEnabled      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  @@index([category])
+  @@index([isEnabled])
+}
+
+// =============================================================================
+// SKILL - Agent skills / knowledge modules that can be loaded
+// =============================================================================
+model Skill {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  content     String                        // The skill content / knowledge base text
+  category    String   @default("general")  // coding, analysis, communication, research, etc.
+  isLoaded    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([category])
+  @@index([isLoaded])
+}
+
+// =============================================================================
+// CONVERSATION - Chat sessions between users and agents
+// =============================================================================
+model Conversation {
+  id        String   @id @default(cuid())
+  agentId   String
+  title     String   @default("New Conversation")
+  status    String   @default("active")  // active, archived, deleted
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  agent    Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([agentId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// MESSAGE - Individual messages within a conversation
+// =============================================================================
+model Message {
+  id            String   @id @default(cuid())
+  conversationId String
+  role          String                       // user, assistant, system, tool
+  content       String   @default("")
+  toolCalls     String   @default("[]")      // JSON: array of tool call objects
+  toolResults   String   @default("[]")      // JSON: array of tool result objects
+  tokenCount    Int?
+  createdAt     DateTime @default(now())
+
+  // Relations
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// AGENT TEAM - Multi-agent teams for collaborative tasks
+// =============================================================================
+model AgentTeam {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  config      String   @default("{}")       // JSON: { collaborationMode, routing, maxAgents, ... }
+  createdAt   DateTime @default(now())
+
+  // Relations
+  members TeamMember[]
+  tasks   Task[]
+
+  @@index([name])
+}
+
+// =============================================================================
+// TEAM MEMBER - Junction table linking agents to teams with roles
+// =============================================================================
+model TeamMember {
+  id      String @id @default(cuid())
+  teamId  String
+  agentId String
+  role    String @default("worker")  // leader, worker, reviewer, observer
+
+  // Relations
+  team  AgentTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  agent Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, agentId])  // An agent can only appear once in a team
+  @@index([agentId])
+}
+
+// =============================================================================
+// TASK - Background / async tasks assigned to agents or teams
+// =============================================================================
+model Task {
+  id          String   @id @default(cuid())
+  agentId     String?
+  teamId      String?
+  title       String
+  description String?
+  status      String   @default("pending")    // pending, in_progress, completed, failed, cancelled
+  priority    String   @default("medium")     // low, medium, high, critical
+  progress    Int      @default(0)            // 0-100 percentage
+  result      String?                          // JSON: task output / result data
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  agent Agent?     @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  team  AgentTeam? @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@index([agentId])
+  @@index([teamId])
+  @@index([status])
+  @@index([priority])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// MEMORY - Agent persistent memory storage (key-value)
+// =============================================================================
+model Memory {
+  id        String   @id @default(cuid())
+  agentId   String
+  key       String
+  value     String
+  category  String   @default("context")  // preference, context, fact, instruction
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, key])  // One key per agent
+  @@index([agentId])
+  @@index([category])
+}
+
+// =============================================================================
+// PERMISSION RULE - Safety and access control rules
+// =============================================================================
+model PermissionRule {
+  id              String   @id @default(cuid())
+  mode            String   @default("allow")  // allow, deny, ask
+  pathPattern     String                       // File path / resource glob pattern
+  isAllowed       Boolean  @default(true)
+  commandDenyList String   @default("[]")      // JSON: array of denied command strings
+  createdAt       DateTime @default(now())
+
+  @@index([mode])
+  @@index([pathPattern])
+}
