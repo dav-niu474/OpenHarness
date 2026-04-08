@@ -234,34 +234,95 @@ function formatTimestamp(ts: string): string {
 // THINKING BLOCK COMPONENT (Premium)
 // ═══════════════════════════════════════════════════════════════════
 
-function ThinkingBlock({ thinking, isStreaming }: { thinking: string; isStreaming?: boolean }) {
+function ThinkingBlock({ thinking, isStreaming, isDone }: { thinking: string; isStreaming?: boolean; isDone?: boolean }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [hasAutoCollapsed, setHasAutoCollapsed] = useState(false);
 
-  if (!thinking) return null;
+  // Auto-open while streaming (render-time prop sync — React-approved pattern)
+  const [prevStreaming, setPrevStreaming] = useState(!!isStreaming);
+  if (!!isStreaming !== prevStreaming) {
+    setPrevStreaming(!!isStreaming);
+    if (isStreaming) {
+      setIsOpen(true);
+      setHasAutoCollapsed(false);
+    }
+  }
+
+  // Auto-collapse when thinking is done and content has started (once per stream)
+  const [prevDone, setPrevDone] = useState(!!isDone);
+  if (!!isDone !== prevDone) {
+    setPrevDone(!!isDone);
+    if (isDone && !hasAutoCollapsed) {
+      setIsOpen(false);
+      setHasAutoCollapsed(true);
+    }
+  }
+
+  // Don't render if no thinking content and not streaming
+  if (!thinking && !isStreaming) return null;
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <div className="mb-2 overflow-hidden">
-        <CollapsibleTrigger className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-muted/50 dark:hover:bg-white/[0.03] transition-colors rounded">
-          <Brain className="w-3 h-3 text-muted-foreground/50 shrink-0" />
-          <span className="text-[11px] text-muted-foreground/70 flex-1">
-            {isStreaming ? 'Thinking…' : 'Thoughts'}
-          </span>
-          <ChevronDown className={`w-3 h-3 text-muted-foreground/40 transition-transform duration-150 ${isOpen ? 'rotate-0' : '-rotate-90'}`} />
-        </CollapsibleTrigger>
+    <div className="mb-1">
+      {thinking ? (
+        <Collapsible open={isOpen} onOpenChange={(open) => { if (!isStreaming) setIsOpen(open); }}>
+          <div className="overflow-hidden">
+            <CollapsibleTrigger className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-muted/50 dark:hover:bg-white/[0.03] transition-colors rounded">
+              <Brain className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+              <span className="text-[11px] text-muted-foreground/70 flex-1">
+                {isStreaming ? 'Thinking…' : 'Thoughts'}
+              </span>
+              <ChevronDown className={`w-3 h-3 text-muted-foreground/40 transition-transform duration-150 ${isOpen ? 'rotate-0' : '-rotate-90'}`} />
+            </CollapsibleTrigger>
 
-        <CollapsibleContent>
-          <div className="max-h-64 overflow-y-auto">
-            <div className="px-3 pb-3 pt-2 font-mono text-xs leading-relaxed text-muted-foreground/70 whitespace-pre-wrap">
-              {thinking}
-              {isStreaming && (
-                <span className="inline-block w-1.5 h-3.5 bg-muted-foreground/50 ml-0.5 align-text-bottom animate-pulse" />
-              )}
-            </div>
+            <CollapsibleContent>
+              <div className="max-h-64 overflow-y-auto">
+                <div className="px-2.5 pb-2.5 pt-1.5 font-mono text-xs leading-relaxed text-muted-foreground/70 whitespace-pre-wrap">
+                  {thinking}
+                  {isStreaming && (
+                    <span className="inline-block w-1.5 h-3.5 bg-muted-foreground/50 ml-0.5 align-text-bottom animate-pulse" />
+                  )}
+                </div>
+              </div>
+            </CollapsibleContent>
           </div>
-        </CollapsibleContent>
-      </div>
-    </Collapsible>
+        </Collapsible>
+      ) : null}
+
+      {/* Analyzing indicator — shown when streaming but no thinking content yet */}
+      {isStreaming && !thinking && (
+        <div className="flex items-center gap-2 px-2.5 py-1.5">
+          <motion.div className="flex gap-1" aria-hidden="true">
+            <motion.span
+              className="w-1 h-1 rounded-full bg-amber-400"
+              animate={{ y: [0, -4, 0] }}
+              transition={{ duration: 0.6, repeat: Infinity, delay: 0 }}
+            />
+            <motion.span
+              className="w-1 h-1 rounded-full bg-amber-400"
+              animate={{ y: [0, -4, 0] }}
+              transition={{ duration: 0.6, repeat: Infinity, delay: 0.15 }}
+            />
+            <motion.span
+              className="w-1 h-1 rounded-full bg-amber-400"
+              animate={{ y: [0, -4, 0] }}
+              transition={{ duration: 0.6, repeat: Infinity, delay: 0.3 }}
+            />
+          </motion.div>
+          <span className="text-[11px] text-muted-foreground/70">Analyzing your request…</span>
+        </div>
+      )}
+
+      {/* Subtle indicator below thinking block during thinking phase */}
+      {isStreaming && thinking && !isDone && (
+        <div className="flex items-center gap-1.5 px-2.5 pt-0.5">
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-300 opacity-75" />
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-400" />
+          </span>
+          <span className="text-[10px] text-muted-foreground/50">Analyzing your request…</span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -465,6 +526,219 @@ function SkillCallCard({ skillCall }: { skillCall: SkillCallInfo }) {
             </motion.div>
           )}
         </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TOOL CALL CHAIN — Visual Pipeline Component
+// ═══════════════════════════════════════════════════════════════════
+
+interface TimelineItem {
+  id: string;
+  type: 'tool' | 'skill';
+  name: string;
+  status: string;
+  input?: Record<string, unknown>;
+  result?: string;
+  description?: string;
+  duration?: number;
+}
+
+function ToolCallChain({
+  toolCalls,
+  skillCalls,
+  isStreaming,
+}: {
+  toolCalls?: ToolCallInfo[];
+  skillCalls?: SkillCallInfo[];
+  isStreaming?: boolean;
+}) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  if (!toolCalls?.length && !skillCalls?.length) return null;
+
+  const items: TimelineItem[] = [
+    ...(toolCalls || []).map((tc) => ({
+      id: tc.id || `tc-${tc.tool}-${Math.random().toString(36).slice(2, 6)}`,
+      type: 'tool' as const,
+      name: tc.tool,
+      status: tc.status || 'success',
+      input: tc.input,
+      result: tc.result,
+      duration: tc.duration,
+    })),
+    ...(skillCalls || []).map((sc) => ({
+      id: `sc-${sc.name}`,
+      type: 'skill' as const,
+      name: sc.name,
+      status: sc.status || 'loaded',
+      description: sc.description,
+    })),
+  ];
+
+  const runningCount = items.filter(
+    (i) => i.status === 'running' || i.status === 'loading'
+  ).length;
+  const successCount = items.filter((i) => i.status === 'success' || i.status === 'loaded').length;
+
+  return (
+    <div className="my-1.5">
+      {/* Header for multi-item chains */}
+      {items.length > 1 && (
+        <div className="text-[10px] text-muted-foreground/50 mb-1 ml-[18px] font-medium">
+          {items.length} operation{items.length > 1 ? 's' : ''}
+          {runningCount > 0
+            ? ` · ${runningCount} active`
+            : successCount === items.length
+              ? ' · completed'
+              : ''}
+        </div>
+      )}
+
+      <div className="relative">
+        {/* Vertical connector line */}
+        {items.length > 1 && (
+          <div className="absolute left-[5px] top-[7px] bottom-[7px] w-px bg-zinc-200 dark:bg-zinc-700/60" />
+        )}
+
+        <div className="flex flex-col">
+          {items.map((item) => {
+            const isExpanded = expandedId === item.id;
+            const isRunning = item.status === 'running' || item.status === 'loading';
+            const isSuccess = item.status === 'success' || item.status === 'loaded';
+            const isError = item.status === 'error';
+
+            return (
+              <div key={item.id}>
+                {/* Node row */}
+                <div className="flex items-start gap-2.5 py-[3px]">
+                  {/* Timeline dot */}
+                  <div className="relative z-10 shrink-0 mt-[5px]">
+                    {isRunning ? (
+                      <motion.div
+                        className="w-[10px] h-[10px] rounded-full"
+                        style={{
+                          backgroundColor:
+                            item.type === 'tool' ? 'rgb(251, 191, 36)' : 'rgb(167, 139, 250)',
+                        }}
+                        animate={{ scale: [1, 1.5, 1], opacity: [0.7, 0.25, 0.7] }}
+                        transition={{ duration: 1.2, repeat: Infinity }}
+                      />
+                    ) : isSuccess ? (
+                      <motion.div
+                        initial={isStreaming ? { scale: 0.5, opacity: 0 } : false}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+                        className="w-[10px] h-[10px] rounded-full bg-emerald-500"
+                      />
+                    ) : isError ? (
+                      <div className="w-[10px] h-[10px] rounded-full bg-red-400" />
+                    ) : (
+                      <div className="w-[10px] h-[10px] rounded-full bg-zinc-400 dark:bg-zinc-500" />
+                    )}
+                  </div>
+
+                  {/* Node content */}
+                  <button
+                    onClick={() => setExpandedId(isExpanded ? null : item.id)}
+                    className="flex items-center gap-2 px-2 py-[3px] rounded-md hover:bg-muted/50 dark:hover:bg-white/[0.03] transition-colors text-left group/node min-w-0 flex-1"
+                  >
+                    {/* Icon */}
+                    {item.type === 'tool' ? (
+                      <Terminal className="w-3 h-3 text-zinc-400 shrink-0" />
+                    ) : (
+                      <BookOpen className="w-3 h-3 text-violet-400 shrink-0" />
+                    )}
+
+                    {/* Name */}
+                    <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-300 font-mono truncate">
+                      {item.name}
+                    </span>
+
+                    {/* Duration */}
+                    {item.type === 'tool' && item.duration != null && item.duration > 0 && (
+                      <span className="text-[9px] text-muted-foreground/50 font-mono shrink-0">
+                        {item.duration}ms
+                      </span>
+                    )}
+
+                    {/* Status indicator */}
+                    {isRunning && (
+                      <span className="text-[8px] font-medium px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 shrink-0">
+                        running
+                      </span>
+                    )}
+                    {isSuccess && (
+                      <motion.div
+                        initial={isStreaming ? { scale: 0, opacity: 0 } : false}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+                      >
+                        <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+                      </motion.div>
+                    )}
+                    {isError && (
+                      <AlertTriangle className="w-3 h-3 text-red-400 shrink-0" />
+                    )}
+
+                    {/* Expand chevron */}
+                    <ChevronDown
+                      className={`w-2.5 h-2.5 text-zinc-400 transition-transform duration-150 shrink-0 ${
+                        isExpanded ? 'rotate-0' : '-rotate-90'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Expanded details */}
+                <AnimatePresence initial={false}>
+                  {isExpanded && item.type === 'tool' && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="ml-[18px] mr-1 mb-1.5 space-y-1.5">
+                        {/* Input */}
+                        {item.input && Object.keys(item.input).length > 0 && (
+                          <div className="rounded-md bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200/60 dark:border-zinc-700/40 p-2 max-h-36 overflow-y-auto">
+                            <div className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                              Input
+                            </div>
+                            <pre className="text-[10px] text-zinc-600 dark:text-zinc-400 font-mono whitespace-pre-wrap break-all leading-relaxed">
+                              {JSON.stringify(item.input, null, 2)}
+                            </pre>
+                          </div>
+                        )}
+                        {/* Result */}
+                        {item.result && (
+                          <div className="rounded-md bg-zinc-100 dark:bg-zinc-800/60 border border-zinc-200/60 dark:border-zinc-700/40 p-2 max-h-36 overflow-y-auto">
+                            <div className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider mb-1">
+                              Result
+                            </div>
+                            <pre className="text-[10px] text-zinc-600 dark:text-zinc-400 font-mono whitespace-pre-wrap break-all leading-relaxed">
+                              {item.result}
+                            </pre>
+                          </div>
+                        )}
+                        {/* Empty state */}
+                        {!item.input?.keys?.length && !item.result && (
+                          <div className="text-[10px] text-muted-foreground/50 py-1">
+                            No details available
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -910,6 +1184,26 @@ function ChatBubble({
           </div>
         )}
 
+        {/* ThinkingBlock — OUTSIDE bubble, above it */}
+        {!isUser && (
+          (message.thinking || (message.isStreaming && !message.content)) && (
+            <ThinkingBlock
+              thinking={message.thinking || ''}
+              isStreaming={message.isStreaming}
+              isDone={!!message.content}
+            />
+          )
+        )}
+
+        {/* ToolCallChain — OUTSIDE bubble, between ThinkingBlock and bubble */}
+        {!isUser && (message.toolCalls?.length || message.skillCalls?.length) && (
+          <ToolCallChain
+            toolCalls={message.toolCalls}
+            skillCalls={message.skillCalls}
+            isStreaming={message.isStreaming}
+          />
+        )}
+
         {/* Bubble */}
         <div
           className={`
@@ -931,35 +1225,10 @@ function ChatBubble({
             </div>
           ) : (
             <>
-              {/* Thinking Block */}
-              {message.thinking && (
-                <ThinkingBlock thinking={message.thinking} isStreaming={message.isStreaming} />
-              )}
-              {/* Tool Calls */}
-              {message.toolCalls && message.toolCalls.length > 0 && (
-                <div className="mb-2">
-                  {message.toolCalls.map((tc, idx) => (
-                    <ToolCallCard key={`tc-${idx}`} toolCall={tc} />
-                  ))}
-                </div>
-              )}
-              {/* Skill Calls */}
-              {message.skillCalls && message.skillCalls.length > 0 && (
-                <div className="mb-2">
-                  {message.skillCalls.map((sc) => (
-                    <SkillCallCard key={sc.name} skillCall={sc} />
-                  ))}
-                </div>
-              )}
               {/* Main content */}
               {message.content ? (
                 <RichMarkdown content={message.content} />
-              ) : !message.isStreaming ? null : (
-                <div className="flex items-center gap-2 py-2 text-muted-foreground">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span className="text-xs">Generating...</span>
-                </div>
-              )}
+              ) : !message.isStreaming ? null : null}
               {/* Streaming cursor */}
               {message.isStreaming && message.content && (
                 <motion.span
@@ -1542,11 +1811,13 @@ function AgentLoopStatusBar({
   tokenCount,
   messageCount,
   thinkingChars,
+  activeToolCount,
 }: {
-  status: 'idle' | 'thinking' | 'executing' | 'coordinating';
+  status: 'idle' | 'thinking' | 'executing' | 'tool_executing' | 'coordinating';
   tokenCount: number;
   messageCount: number;
   thinkingChars: number;
+  activeToolCount?: number;
 }) {
   return (
     <div className="flex items-center gap-2 px-4 py-2 border-t bg-muted/30">
@@ -1556,30 +1827,39 @@ function AgentLoopStatusBar({
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />
             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
           </span>
-          <span className="text-xs text-muted-foreground font-medium">Idle</span>
-          <span className="text-xs text-muted-foreground/60">— Ready for input</span>
+          <span className="text-xs text-muted-foreground font-medium">Ready</span>
+          <span className="text-xs text-muted-foreground/60">— Awaiting input</span>
         </>
       )}
       {status === 'thinking' && (
         <>
           <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
-          <span className="text-xs text-amber-600 font-medium">Thinking...</span>
+          <span className="text-xs text-amber-600 font-medium">Thinking</span>
           {thinkingChars > 0 && (
-            <span className="text-xs text-muted-foreground/60">— {thinkingChars} chars reasoning</span>
+            <span className="text-xs text-muted-foreground/60">— {thinkingChars.toLocaleString()} chars reasoning</span>
+          )}
+        </>
+      )}
+      {status === 'tool_executing' && (
+        <>
+          <Terminal className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+          <span className="text-xs text-amber-600 font-medium">Executing Tools</span>
+          {(activeToolCount ?? 0) > 0 && (
+            <span className="text-xs text-muted-foreground/60">— {activeToolCount} active</span>
           )}
         </>
       )}
       {status === 'executing' && (
         <>
           <CircleDot className="w-3.5 h-3.5 text-cyan-500 animate-spin" />
-          <span className="text-xs text-cyan-600 font-medium">Streaming...</span>
+          <span className="text-xs text-cyan-600 font-medium">Streaming</span>
           <span className="text-xs text-muted-foreground/60">— Receiving response</span>
         </>
       )}
       {status === 'coordinating' && (
         <>
           <Network className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
-          <span className="text-xs text-emerald-600 font-medium">Coordinating...</span>
+          <span className="text-xs text-emerald-600 font-medium">Coordinating</span>
           <span className="text-xs text-muted-foreground/60">— Multi-agent orchestration</span>
         </>
       )}
@@ -1587,7 +1867,13 @@ function AgentLoopStatusBar({
         {thinkingChars > 0 && (
           <Badge variant="outline" className="text-[10px] h-5 text-violet-500 border-violet-200 dark:border-violet-800">
             <Brain className="w-2.5 h-2.5 mr-0.5" />
-            {thinkingChars}
+            {thinkingChars.toLocaleString()}
+          </Badge>
+        )}
+        {(activeToolCount ?? 0) > 0 && (
+          <Badge variant="outline" className="text-[10px] h-5 text-amber-600 border-amber-200 dark:border-amber-800">
+            <Terminal className="w-2.5 h-2.5 mr-0.5" />
+            {activeToolCount} tool{(activeToolCount ?? 0) > 1 ? 's' : ''}
           </Badge>
         )}
         <Badge variant="outline" className="text-[10px] h-5 font-mono">
@@ -1628,7 +1914,7 @@ export default function PlaygroundPage() {
   ]);
   const [activeConvId, setActiveConvId] = useState('conv-default');
   const [inputValue, setInputValue] = useState('');
-  const [loopStatus, setLoopStatus] = useState<'idle' | 'thinking' | 'executing' | 'coordinating'>('idle');
+  const [loopStatus, setLoopStatus] = useState<'idle' | 'thinking' | 'executing' | 'tool_executing' | 'coordinating'>('idle');
   const [tokenCount, setTokenCount] = useState(0);
   const [totalThinkingChars, setTotalThinkingChars] = useState(0);
   const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
@@ -1652,6 +1938,14 @@ export default function PlaygroundPage() {
   const activeConversation = conversations.find((c) => c.id === activeConvId);
   const messages = activeConversation?.messages ?? [];
   const isAnyStreaming = messages.some((m) => m.isStreaming);
+
+  // Derive active tool count from streaming messages
+  const activeToolCount = messages.reduce((count, m) => {
+    if (m.isStreaming && m.toolCalls) {
+      return count + m.toolCalls.filter((tc) => tc.status === 'running').length;
+    }
+    return count;
+  }, 0);
 
   // Fetch available skills on mount
   useEffect(() => {
@@ -1680,7 +1974,7 @@ export default function PlaygroundPage() {
     if (messages.length > 0 || streamingMsgId) {
       scrollToBottom();
     }
-  }, [messages.length, messages[messages.length - 1]?.content, streamingMsgId, scrollToBottom]);
+  }, [messages.length, messages[messages.length - 1]?.content, messages[messages.length - 1]?.thinking, streamingMsgId, scrollToBottom]);
 
   // Track scroll position using native div ref
   useEffect(() => {
@@ -1820,6 +2114,7 @@ export default function PlaygroundPage() {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let hasReceivedTokens = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -1837,6 +2132,7 @@ export default function PlaygroundPage() {
           const json = JSON.parse(trimmed.slice(6));
 
           if (json.type === 'thinking' && json.content) {
+            setLoopStatus('thinking');
             setTotalThinkingChars((prev) => prev + json.content.length);
             setConversations((prev) =>
               prev.map((c) => {
@@ -1851,6 +2147,10 @@ export default function PlaygroundPage() {
               })
             );
           } else if (json.type === 'token' && json.content) {
+            if (!hasReceivedTokens) {
+              hasReceivedTokens = true;
+              setLoopStatus('executing');
+            }
             setConversations((prev) =>
               prev.map((c) => {
                 if (c.id !== convId) return c;
@@ -1864,6 +2164,9 @@ export default function PlaygroundPage() {
               })
             );
           } else if (json.type === 'tool_call') {
+            if (!json.done) {
+              setLoopStatus('tool_executing');
+            }
             setConversations((prev) =>
               prev.map((c) => {
                 if (c.id !== convId) return c;
@@ -2184,7 +2487,11 @@ export default function PlaygroundPage() {
                         )}
                       </span>
                       <span className="text-[11px] text-muted-foreground">
-                        {loopStatus === 'coordinating' ? 'Coordinating...' : isAnyStreaming ? 'Streaming...' : 'Online'}
+                        {loopStatus === 'coordinating' ? 'Coordinating...'
+                          : loopStatus === 'thinking' ? 'Thinking...'
+                          : loopStatus === 'tool_executing' ? 'Executing Tools...'
+                          : isAnyStreaming ? 'Streaming...'
+                          : 'Online'}
                       </span>
                     </div>
                   </div>
@@ -2365,6 +2672,8 @@ export default function PlaygroundPage() {
                           >
                             {loopStatus === 'coordinating' ? (
                               <Network className="w-3.5 h-3.5 animate-pulse" />
+                            ) : loopStatus === 'tool_executing' ? (
+                              <Terminal className="w-3.5 h-3.5 animate-pulse" />
                             ) : loopStatus !== 'idle' ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
                             ) : (
@@ -2376,9 +2685,13 @@ export default function PlaygroundPage() {
                           {isDisabled
                             ? agentMode === 'multi' && multiAgentIds.length < 2
                               ? 'Select 2+ agents'
-                              : loopStatus !== 'idle'
-                                ? 'Generating...'
-                                : 'Type a message'
+                              : loopStatus === 'thinking'
+                                ? 'Thinking...'
+                                : loopStatus === 'tool_executing'
+                                  ? 'Executing tools...'
+                                  : loopStatus !== 'idle'
+                                    ? 'Generating...'
+                                    : 'Type a message'
                             : agentMode === 'multi'
                               ? 'Send to all agents'
                               : 'Send message'
@@ -2412,6 +2725,7 @@ export default function PlaygroundPage() {
                 tokenCount={tokenCount}
                 messageCount={messages.length}
                 thinkingChars={totalThinkingChars}
+                activeToolCount={activeToolCount}
               />
             </div>
           </ResizablePanel>

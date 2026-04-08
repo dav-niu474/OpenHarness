@@ -872,3 +872,92 @@ Diagnose and fix deployed Vercel application issues: schema mismatch causing API
 - **ThinkingBlock redesigned**: Clean, professional, minimal — no gradients/glow/borders
 - **Create Agent dialog**: Full form with skill binding, agent.md, soul.md configuration
 - **Deployment verified**: All 17+ API endpoints returning 200 with real data on https://openharness-one.vercel.app
+
+---
+
+## Task ID: 2 - Thinking, Tool Chain & Interaction Improvements
+### Work Task
+Improve the Playground chat interaction with real-time thinking display, tool/skill call chain visualization, and granular status states.
+
+### Work Summary
+Successfully implemented three major interaction improvements to the Playground chat UI. All changes compile cleanly with zero lint errors, and the dev server confirms the page returns 200 OK.
+
+**1. ThinkingBlock — Real-time Streaming Display**
+
+Modified the `ThinkingBlock` component to support auto-expand/collapse behavior during streaming:
+
+- **Auto-expand while streaming**: When `isStreaming` is true, the ThinkingBlock automatically opens so users can see thinking content in real-time as it arrives via SSE events.
+- **Auto-collapse after**: When `isDone` is true (content tokens start arriving), the block automatically collapses to save space. Uses a `hasAutoCollapsed` state guard to ensure this only happens once per stream.
+- **Render-time prop sync**: Uses the React-approved render-time state update pattern (comparing previous prop values) to synchronize open state with streaming status, avoiding `useEffect` and satisfying the strict `react-hooks/set-state-in-effect` lint rule.
+- **"Analyzing your request..." indicator**: When the agent first starts (streaming but no thinking content yet), shows a subtle animated indicator with three bouncing amber dots. When thinking content IS streaming, shows a subtle pulsing dot below the expanded thinking text.
+- **Moved outside bubble**: ThinkingBlock is now rendered ABOVE the message bubble background (outside the `bg-muted dark:bg-zinc-800/50` div), similar to how ChatGPT/Claude display thinking.
+
+**2. ToolCallChain — Visual Pipeline Component**
+
+Created a new `ToolCallChain` component (~180 lines) that renders tool and skill calls as a visual call chain/pipeline:
+
+- **Vertical timeline**: Connected dots/nodes with a subtle vertical line (`w-px bg-zinc-200 dark:bg-zinc-700/60`)
+- **Unified items**: Combines both `ToolCallInfo[]` and `SkillCallInfo[]` into a single `TimelineItem[]` array
+- **Node design**: Each node has a 10px dot, icon (Terminal for tools, BookOpen for skills), monospace tool name, optional duration badge, and status indicator
+- **Status states**:
+  - `running`/`loading`: Pulsing amber/violet dot animation (`scale: [1, 1.5, 1], opacity: [0.7, 0.25, 0.7]`) + "running" badge
+  - `success`/`loaded`: Spring-animated emerald dot + CheckCircle2 icon (with entrance animation when `isStreaming`)
+  - `error`: Red dot + AlertTriangle icon
+- **Expandable details**: Clicking a node expands to show Input and Result sections in compact code blocks (max-h-36, scrollable)
+- **Header**: When multiple items exist, shows operation count and active/completed status
+- **Compact by default**: Only shows name + icon + status; expandable for details
+- **Dark mode compatible**: All colors use zinc tones with emerald/amber/violet accents
+- **Moved outside bubble**: ToolCallChain renders between ThinkingBlock and the message bubble
+
+**3. Interaction Optimizations**
+
+- **Auto-scroll improvements**: Added `messages[messages.length - 1]?.thinking` to the auto-scroll dependency array so the chat scrolls during the thinking phase, not just when content tokens arrive.
+- **Granular AgentLoopStatusBar**: Added new `'tool_executing'` status with Terminal icon showing "Executing Tools — N active". Updated existing status labels (Idle → Ready, Thinking... → Thinking, Streaming... → Streaming, Coordinating... → Coordinating). Added `activeToolCount` prop with badge showing "N tools" in amber.
+- **Derived active tool count**: Computed from streaming messages using `reduce` to count tool calls with `status === 'running'`.
+- **Stream phase transitions**: Modified `streamAgentResponse` to track `hasReceivedTokens` local variable and set loop status transitions:
+  - `thinking` events → `setLoopStatus('thinking')`
+  - First `token` event → `setLoopStatus('executing')`
+  - `tool_call` events with `!json.done` → `setLoopStatus('tool_executing')`
+- **Header status text**: Updated the chat header status indicator to show granular states: Thinking..., Executing Tools..., Coordinating..., Streaming..., Online.
+- **Send button icons**: Added Terminal icon with pulse animation for `tool_executing` state; updated tooltip text with status-specific messages.
+- **Removed "Generating..." spinner**: The old generic spinner inside the bubble has been replaced by the ThinkingBlock's "Analyzing your request..." indicator, which provides more context about what the agent is doing.
+
+**4. ChatBubble Restructuring**
+
+The message bubble layout was restructured from:
+
+```
+[Bubble bg]
+  [ThinkingBlock]     ← was INSIDE
+  [ToolCallCards]     ← was INSIDE  
+  [SkillCallCards]    ← was INSIDE
+  [RichMarkdown]      ← stays inside
+  [Streaming cursor]  ← stays inside
+[/Bubble]
+```
+
+To:
+
+```
+[ThinkingBlock]           ← OUTSIDE bubble, above it
+[ToolCallChain]           ← NEW, OUTSIDE bubble
+[Bubble bg]
+  [RichMarkdown]           ← only text content
+  [Streaming cursor]
+[/Bubble]
+```
+
+The ToolCallCard and SkillCallCard components are preserved for backward compatibility (still used for standalone `role: 'tool'` and `role: 'skill'` messages).
+
+**Design Style**: Clean and professional — muted zinc tones with subtle emerald accents for success states. No flashy gradients, no glassmorphism, no animated gradient borders. Compact nodes with minimal padding. Dark mode compatible.
+
+**Files modified:**
+- `src/components/pages/PlaygroundPage.tsx` (modified — grew from ~2422 to ~2736 lines)
+
+**Component changes:**
+- `ThinkingBlock`: Added `isDone` prop, auto-expand/collapse logic, analyzing indicator
+- `ToolCallChain`: New component (~180 lines) for visual pipeline
+- `ChatBubble`: Restructured to move ThinkingBlock and ToolCallChain outside bubble
+- `AgentLoopStatusBar`: Added `tool_executing` status, `activeToolCount` prop, updated labels
+- `streamAgentResponse`: Added phase transition tracking
+- `PlaygroundPage`: Added `activeToolCount` derived state, updated auto-scroll deps
