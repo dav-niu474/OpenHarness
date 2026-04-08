@@ -93,6 +93,7 @@ interface ToolCallInfo {
   result?: string;
   status?: 'running' | 'success' | 'error';
   duration?: number;
+  iteration?: number;
 }
 
 interface SkillCallInfo {
@@ -190,9 +191,9 @@ const AGENT_OPTIONS: AgentOption[] = [
 ];
 
 const QUICK_PROMPTS = [
-  { label: 'Explain this code', prompt: 'Explain the following code and suggest improvements:\n\n```python\ndef quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n    pivot = arr[len(arr) // 2]\n    left = [x for x in arr if x < pivot]\n    middle = [x for x in arr if x == pivot]\n    right = [x for x in arr if x > pivot]\n    return quicksort(left) + middle + quicksort(right)\n```' },
-  { label: 'Write a React hook', prompt: 'Write a custom React hook called useDebounce that debounces a value with a configurable delay.' },
-  { label: 'Compare technologies', prompt: 'Compare React, Vue, and Svelte. Use a markdown table to show their key differences in terms of performance, learning curve, and ecosystem.' },
+  { label: 'Search the web', prompt: 'Search the web for "Next.js 15 latest features 2025" and summarize the results.' },
+  { label: 'List agents & tools', prompt: 'Use the Agent tool to list all available agents in the system, then use the Skill tool to list available skills.' },
+  { label: 'Create a task', prompt: 'Create a task titled "Review code quality" with high priority, then list all tasks to verify it was created.' },
   { label: 'Debug an issue', prompt: 'I have a React component that re-renders infinitely. Here is the code:\n\n```tsx\nuseEffect(() => {\n  const data = fetchData();\n  setData(data);\n}, [data]);\n```\n\nWhat\'s wrong and how do I fix it?' },
 ];
 
@@ -544,6 +545,7 @@ interface TimelineItem {
   result?: string;
   description?: string;
   duration?: number;
+  iteration?: number;
 }
 
 function ToolCallChain({
@@ -568,6 +570,7 @@ function ToolCallChain({
       input: tc.input,
       result: tc.result,
       duration: tc.duration,
+      iteration: tc.iteration,
     })),
     ...(skillCalls || []).map((sc) => ({
       id: `sc-${sc.name}`,
@@ -586,7 +589,7 @@ function ToolCallChain({
   return (
     <div className="my-1.5">
       {/* Header for multi-item chains */}
-      {items.length > 1 && (
+      {items.length > 0 && (
         <div className="text-[10px] text-muted-foreground/50 mb-1 ml-[18px] font-medium">
           {items.length} operation{items.length > 1 ? 's' : ''}
           {runningCount > 0
@@ -656,6 +659,13 @@ function ToolCallChain({
                     <span className="text-[11px] font-medium text-zinc-600 dark:text-zinc-300 font-mono truncate">
                       {item.name}
                     </span>
+
+                    {/* Iteration badge */}
+                    {item.type === 'tool' && item.iteration && item.iteration > 1 && (
+                      <span className="text-[8px] font-medium px-1.5 py-0.5 rounded-full bg-cyan-100 dark:bg-cyan-900/30 text-cyan-600 dark:text-cyan-400 border border-cyan-200 dark:border-cyan-800 shrink-0">
+                        loop {item.iteration}
+                      </span>
+                    )}
 
                     {/* Duration */}
                     {item.type === 'tool' && item.duration != null && item.duration > 0 && (
@@ -1338,15 +1348,15 @@ function WelcomeState({
       >
         <Badge variant="outline" className="text-[10px] h-6">
           <Zap className="w-2.5 h-2.5 mr-1 text-amber-500" />
-          43+ Tools
+          19+ Tools
         </Badge>
         <Badge variant="outline" className="text-[10px] h-6">
           <BookOpen className="w-2.5 h-2.5 mr-1 text-violet-500" />
-          Skills System
+          Skills
         </Badge>
         <Badge variant="outline" className="text-[10px] h-6">
           <Brain className="w-2.5 h-2.5 mr-1 text-violet-500" />
-          Deep Thinking
+          Agent Loop
         </Badge>
         <Badge variant="outline" className="text-[10px] h-6">
           <Network className="w-2.5 h-2.5 mr-1 text-emerald-500" />
@@ -1903,7 +1913,7 @@ export default function PlaygroundPage() {
         {
           id: 'msg-welcome',
           role: 'assistant',
-          content: 'Hello! I am your **OpenHarness AI Agent**. I have access to 43+ tools for file operations, web search, code analysis, and more.\n\nI support:\n- 🧠 **Deep Thinking** — Reasoning process visualization\n- 🔧 **Tool Calls** — Structured input/output display\n- 📚 **Skills** — Knowledge module loading\n- 🤖 **Multi-Agent** — Switch between specialized agents\n\nTry asking me to explain code, write functions, or analyze data!',
+          content: 'Hello! I am your **OpenHarness AI Agent**. I have access to tools and can execute them in real-time.\n\nI support:\n- 🧠 **Deep Thinking** — Reasoning process visualization\n- 🔧 **Tool Execution** — Real WebSearch, Task management, and more\n- 📚 **Skills System** — Knowledge module loading\n- 🔄 **Agent Loop** — Multi-step tool calling with automatic iteration\n- 🤖 **Multi-Agent** — Switch between specialized agents\n\nTry asking me to **search the web** for information, **create tasks**, or **list available agents**!',
           agentId: 'alpha',
           model: 'GLM 4.7',
           timestamp: new Date().toISOString(),
@@ -2101,6 +2111,7 @@ export default function PlaygroundPage() {
         conversationId: convId,
         modelId: selectedModel,
         skillIds: enabledSkills,
+        autonomous: false,
       }),
       signal,
     });
@@ -2164,9 +2175,42 @@ export default function PlaygroundPage() {
               })
             );
           } else if (json.type === 'tool_call') {
-            if (!json.done) {
-              setLoopStatus('tool_executing');
-            }
+            setLoopStatus('tool_executing');
+            setConversations((prev) =>
+              prev.map((c) => {
+                if (c.id !== convId) return c;
+                return {
+                  ...c,
+                  messages: c.messages.map((m) => {
+                    if (m.id !== msgId) return m;
+                    const existingCalls = [...(m.toolCalls || [])];
+                    const existingIdx = existingCalls.findIndex((tc) => tc.id === json.toolCallId);
+                    const parsedInput = json.arguments
+                      ? (() => { try { return JSON.parse(json.arguments); } catch { return { raw: json.arguments }; } })()
+                      : {};
+                    if (existingIdx >= 0) {
+                      existingCalls[existingIdx] = {
+                        ...existingCalls[existingIdx],
+                        input: parsedInput,
+                        status: 'running',
+                        iteration: json.iteration,
+                      };
+                    } else {
+                      existingCalls.push({
+                        id: json.toolCallId,
+                        tool: json.name || 'unknown',
+                        input: parsedInput,
+                        status: 'running',
+                        iteration: json.iteration,
+                      });
+                    }
+                    return { ...m, toolCalls: existingCalls };
+                  }),
+                };
+              })
+            );
+          } else if (json.type === 'tool_executing') {
+            // Tool is now executing on backend
             setConversations((prev) =>
               prev.map((c) => {
                 if (c.id !== convId) return c;
@@ -2179,22 +2223,48 @@ export default function PlaygroundPage() {
                     if (existingIdx >= 0) {
                       existingCalls[existingIdx] = {
                         ...existingCalls[existingIdx],
-                        input: json.arguments
-                          ? (() => { try { return JSON.parse(json.arguments); } catch { return { raw: json.arguments }; } })()
-                          : existingCalls[existingIdx].input,
-                        status: json.done ? 'success' : 'running',
+                        status: 'running',
                       };
-                    } else {
-                      existingCalls.push({
-                        id: json.toolCallId,
-                        tool: json.name || 'unknown',
-                        input: json.arguments
-                          ? (() => { try { return JSON.parse(json.arguments); } catch { return { raw: json.arguments }; } })()
-                          : {},
-                        status: json.done ? 'success' : 'running',
-                      });
                     }
                     return { ...m, toolCalls: existingCalls };
+                  }),
+                };
+              })
+            );
+          } else if (json.type === 'tool_result') {
+            setConversations((prev) =>
+              prev.map((c) => {
+                if (c.id !== convId) return c;
+                return {
+                  ...c,
+                  messages: c.messages.map((m) => {
+                    if (m.id !== msgId) return m;
+                    const existingCalls = [...(m.toolCalls || [])];
+                    const existingIdx = existingCalls.findIndex((tc) => tc.id === json.toolCallId);
+                    if (existingIdx >= 0) {
+                      existingCalls[existingIdx] = {
+                        ...existingCalls[existingIdx],
+                        result: json.result,
+                        status: json.success ? 'success' : 'error',
+                        duration: json.duration,
+                        iteration: json.iteration,
+                      };
+                    }
+                    return { ...m, toolCalls: existingCalls };
+                  }),
+                };
+              })
+            );
+          } else if (json.type === 'loop_iteration') {
+            // New loop iteration started
+            setConversations((prev) =>
+              prev.map((c) => {
+                if (c.id !== convId) return c;
+                return {
+                  ...c,
+                  messages: c.messages.map((m) => {
+                    if (m.id !== msgId) return m;
+                    return { ...m, content: m.content + `\n\n---\n**Loop ${json.iteration}/${json.maxIterations}** — Processing tool results...\n` };
                   }),
                 };
               })

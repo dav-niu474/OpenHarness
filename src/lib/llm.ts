@@ -6,8 +6,14 @@ import ZAI from 'z-ai-web-dev-sdk';
 // ── Types ────────────────────────────────────────────────────────
 
 export interface LLMMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
 }
 
 export interface LLMResponse {
@@ -128,19 +134,22 @@ async function chatWithZAI(
 async function chatWithNVIDIA(
   messages: LLMMessage[],
   model: string,
-  stream: false
+  stream: false,
+  tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }>
 ): Promise<LLMResponse>;
 
 async function chatWithNVIDIA(
   messages: LLMMessage[],
   model: string,
-  stream: true
+  stream: true,
+  tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }>
 ): Promise<ReadableStream<Uint8Array>>;
 
 async function chatWithNVIDIA(
   messages: LLMMessage[],
   model: string,
-  stream: boolean
+  stream: boolean,
+  tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }>
 ): Promise<LLMResponse | ReadableStream<Uint8Array>> {
   const apiKey = process.env.NVIDIA_API_KEY;
   const baseUrl = process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
@@ -169,6 +178,7 @@ async function chatWithNVIDIA(
           max_tokens: 4096,
           temperature: 0.7,
           top_p: 0.95,
+          ...(tools && tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
         }),
         signal: controller.signal,
       });
@@ -198,6 +208,7 @@ async function chatWithNVIDIA(
         max_tokens: 4096,
         temperature: 0.7,
         top_p: 0.95,
+        ...(tools && tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
       }),
       signal: controller.signal,
     });
@@ -247,13 +258,14 @@ export async function chat(
 
 export async function chatStream(
   messages: LLMMessage[],
-  modelId: string = 'default'
+  modelId: string = 'default',
+  tools?: Array<{ type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }>
 ): Promise<ReadableStream<Uint8Array>> {
   const modelInfo = getModelInfo(modelId);
 
   if (modelInfo.provider === 'nvidia') {
-    return chatWithNVIDIA(messages, modelInfo.id, true) as Promise<ReadableStream<Uint8Array>>;
+    return chatWithNVIDIA(messages, modelInfo.id, true, tools) as Promise<ReadableStream<Uint8Array>>;
   }
 
-  return chatWithZAI(messages, modelInfo.id, true) as Promise<ReadableStream<Uint8Array>>;
+  return chatWithZAI(messages, modelInfo.id, true, tools) as Promise<ReadableStream<Uint8Array>>;
 }

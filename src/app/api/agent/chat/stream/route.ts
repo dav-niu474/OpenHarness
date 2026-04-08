@@ -1,13 +1,16 @@
 import { NextRequest } from 'next/server';
 import { db, ensureDatabase } from '@/lib/db';
 import { chatStream, getModelInfo, type LLMMessage } from '@/lib/llm';
+import { getToolDefinitions, executeTool, type ToolContext } from '@/lib/tools';
 
 export const dynamic = 'force-dynamic';
+
+const MAX_AGENT_LOOP_ITERATIONS = 5;
 
 export async function POST(req: NextRequest) {
   try {
     await ensureDatabase();
-    const { agentId, message, conversationId, modelId, model, skillIds } = await req.json();
+    const { agentId, message, conversationId, modelId, model, skillIds, autonomous } = await req.json();
     const effectiveModelReqId = modelId || model;
 
     if (!message || typeof message !== 'string') {
@@ -25,10 +28,10 @@ export async function POST(req: NextRequest) {
     };
     const dbAgentId = agentIdMap[agentId] || agentId || null;
 
-    // Determine model - default to NVIDIA GLM 4.7 for Vercel compatibility
+    // Determine model
     let effectiveModelId = effectiveModelReqId || 'z-ai/glm4.7';
     let systemPrompt =
-      'You are an AI agent powered by OpenHarness. You are a helpful coding assistant with access to tools like file operations, web search, and code analysis. Respond concisely and helpfully. Use markdown formatting when appropriate, including code blocks, tables, and lists.';
+      'You are an AI agent powered by OpenHarness. You are a helpful assistant with access to tools like web search, task management, and code analysis. When the user asks a question that requires real-time information, use the WebSearch tool. For complex tasks, break them down into steps and use tools as needed. Respond concisely and helpfully. Use markdown formatting when appropriate.';
 
     let agentData: { agentMd?: string; soulPrompt?: string; boundSkills?: string } | null = null;
 
@@ -52,12 +55,10 @@ export async function POST(req: NextRequest) {
     // ── Inject skills into system prompt ───────────────────────
     const skillIdsToFetch: string[] = [];
 
-    // Skills from the request body (user-enabled in playground)
     if (Array.isArray(skillIds) && skillIds.length > 0) {
       skillIdsToFetch.push(...skillIds);
     }
 
-    // Skills bound to the agent
     if (agentData?.boundSkills) {
       try {
         const bound: string[] = JSON.parse(agentData.boundSkills);
@@ -68,9 +69,7 @@ export async function POST(req: NextRequest) {
             }
           }
         }
-      } catch {
-        // Invalid JSON, skip
-      }
+      } catch { /* skip */ }
     }
 
     let skillSection = '';
@@ -86,11 +85,11 @@ export async function POST(req: NextRequest) {
           return `- **${s.name}**: ${desc} (${cat})\n  Content: ${s.content}`;
         }).join('\n\n');
 
-        skillSection = `\n\n## Available Skills\nThe following skills are loaded and available to you:\n${skillLines}\n\nYou should use these skills when relevant to the user's request. Tell the user about available skills if they ask.`;
+        skillSection = `\n\n## Available Skills\nThe following skills are loaded and available to you:\n${skillLines}\n\nYou should use these skills when relevant to the user's request.`;
       }
     }
 
-    // ── Inject agent persona and soul into system prompt ──────
+    // ── Inject agent persona and soul ─────────────────────────
     let personaSection = '';
     if (agentData?.agentMd) {
       personaSection += `\n\n## Agent Persona (agent.md)\n${agentData.agentMd}`;
@@ -99,12 +98,10 @@ export async function POST(req: NextRequest) {
       personaSection += `\n\n## Soul/Core Personality (soul.md)\n${agentData.soulPrompt}`;
     }
 
-    // Assemble the final system prompt
     const finalSystemPrompt = systemPrompt + personaSection + skillSection;
-
     const modelInfo = getModelInfo(effectiveModelId);
 
-    // ── Build messages array ────────────────────────────────────
+    // ── Build messages array ──────────────────────────────────
     const messages: LLMMessage[] = [{ role: 'system', content: finalSystemPrompt }];
 
     let dbConversationId: string | null = null;
@@ -131,7 +128,7 @@ export async function POST(req: NextRequest) {
 
     messages.push({ role: 'user', content: message });
 
-    // Save user message to DB only if conversation exists
+    // Save user message
     if (dbConversationId) {
       try {
         await db.message.create({
@@ -142,144 +139,231 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Create streaming completion ─────────────────────────────
-    const providerStream = await chatStream(messages, effectiveModelId);
+    // ── Get tool definitions ──────────────────────────────────
+    const toolDefs = getToolDefinitions();
 
-    // ── Build SSE ReadableStream ────────────────────────────────
+    // ── Create SSE ReadableStream with Agent Loop ─────────────
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
-    let fullContent = '';
-    let fullThinking = '';
-    let usageData: Record<string, number> | null = null;
-    const toolCallsAccumulator: Record<string, { id: string; name: string; arguments: string }> = {};
-
     const readable = new ReadableStream({
       async start(controller) {
-        const reader = providerStream.getReader();
-        let buffer = '';
+        let fullContent = '';
+        let fullThinking = '';
+        let usageData: Record<string, number> | null = null;
+        const toolToolContext: ToolContext = { agentId: dbAgentId || undefined, conversationId: dbConversationId || undefined };
+        const allExecutedToolCalls: Array<{ id: string; name: string; arguments: string; result: string; success: boolean; duration: number }> = [];
+        let loopIteration = 0;
 
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+          // ── Agent Loop ────────────────────────────────────────
+          while (loopIteration < MAX_AGENT_LOOP_ITERATIONS) {
+            loopIteration++;
 
-            buffer += decoder.decode(value, { stream: true });
+            // Notify about loop iteration
+            if (loopIteration > 1) {
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ type: 'loop_iteration', iteration: loopIteration, maxIterations: MAX_AGENT_LOOP_ITERATIONS, model: modelInfo.name })}\n\n`
+                )
+              );
+            }
 
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
+            const providerStream = await chatStream(messages, effectiveModelId, toolDefs);
+            const reader = providerStream.getReader();
+            let buffer = '';
+            const toolCallsAccumulator: Record<string, { id: string; name: string; arguments: string }> = {};
+            let iterationThinking = '';
+            let iterationContent = '';
+            let hasToolCalls = false;
 
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed) continue;
-              if (trimmed === 'data: [DONE]') continue;
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-              if (trimmed.startsWith('data: ')) {
-                try {
-                  const json = JSON.parse(trimmed.slice(6));
-                  const delta = json.choices?.[0]?.delta;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() ?? '';
 
-                  // Handle thinking/reasoning content (NVIDIA GLM models)
-                  const thinkingContent = delta?.reasoning_content;
-                  if (thinkingContent) {
-                    fullThinking += thinkingContent;
-                    controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify({ type: 'thinking', content: thinkingContent, model: modelInfo.name })}\n\n`
-                      )
-                    );
-                  }
+                for (const line of lines) {
+                  const trimmed = line.trim();
+                  if (!trimmed) continue;
+                  if (trimmed === 'data: [DONE]') continue;
 
-                  // Handle regular content
-                  const content = delta?.content;
-                  if (content) {
-                    fullContent += content;
-                    controller.enqueue(
-                      encoder.encode(
-                        `data: ${JSON.stringify({ type: 'token', content, model: modelInfo.name })}\n\n`
-                      )
-                    );
-                  }
+                  if (trimmed.startsWith('data: ')) {
+                    try {
+                      const json = JSON.parse(trimmed.slice(6));
+                      const delta = json.choices?.[0]?.delta;
 
-                  // Handle tool calls (OpenAI-compatible format)
-                  const toolCalls = delta?.tool_calls;
-                  if (toolCalls && Array.isArray(toolCalls)) {
-                    for (const tc of toolCalls) {
-                      if (tc.id) {
-                        toolCallsAccumulator[tc.index ?? 0] = {
-                          id: tc.id,
-                          name: tc.function?.name || 'unknown',
-                          arguments: tc.function?.arguments || '',
-                        };
-                      } else if (toolCallsAccumulator[tc.index ?? 0]) {
-                        // Append arguments to existing tool call
-                        toolCallsAccumulator[tc.index ?? 0].arguments += (tc.function?.arguments || '');
-                      }
-
-                      // Emit tool_call event
-                      const acc = toolCallsAccumulator[tc.index ?? 0];
-                      if (acc) {
+                      // Thinking
+                      const thinkingContent = delta?.reasoning_content;
+                      if (thinkingContent) {
+                        fullThinking += thinkingContent;
+                        iterationThinking += thinkingContent;
                         controller.enqueue(
                           encoder.encode(
-                            `data: ${JSON.stringify({
-                              type: 'tool_call',
-                              toolCallId: acc.id,
-                              name: acc.name,
-                              arguments: acc.arguments,
-                              done: !tc.function?.arguments,
-                            })}\n\n`
+                            `data: ${JSON.stringify({ type: 'thinking', content: thinkingContent, model: modelInfo.name })}\n\n`
                           )
                         );
                       }
+
+                      // Regular content
+                      const content = delta?.content;
+                      if (content) {
+                        fullContent += content;
+                        iterationContent += content;
+                        controller.enqueue(
+                          encoder.encode(
+                            `data: ${JSON.stringify({ type: 'token', content, model: modelInfo.name })}\n\n`
+                          )
+                        );
+                      }
+
+                      // Tool calls
+                      const toolCalls = delta?.tool_calls;
+                      if (toolCalls && Array.isArray(toolCalls)) {
+                        hasToolCalls = true;
+                        for (const tc of toolCalls) {
+                          if (tc.id) {
+                            toolCallsAccumulator[tc.index ?? 0] = {
+                              id: tc.id,
+                              name: tc.function?.name || 'unknown',
+                              arguments: tc.function?.arguments || '',
+                            };
+                          } else if (toolCallsAccumulator[tc.index ?? 0]) {
+                            toolCallsAccumulator[tc.index ?? 0].arguments += (tc.function?.arguments || '');
+                          }
+
+                          const acc = toolCallsAccumulator[tc.index ?? 0];
+                          if (acc) {
+                            controller.enqueue(
+                              encoder.encode(
+                                `data: ${JSON.stringify({
+                                  type: 'tool_call',
+                                  toolCallId: acc.id,
+                                  name: acc.name,
+                                  arguments: acc.arguments,
+                                  done: !tc.function?.arguments,
+                                  iteration: loopIteration,
+                                })}\n\n`
+                              )
+                            );
+                          }
+                        }
+                      }
+
+                      if (json.usage) {
+                        usageData = json.usage;
+                      }
+                    } catch {
+                      // Not valid JSON
                     }
                   }
-
-                  if (json.usage) {
-                    usageData = json.usage;
-                  }
-                } catch {
-                  // Not valid JSON — skip
                 }
               }
-            }
-          }
 
-          // Process remaining buffer
-          if (buffer.trim()) {
-            const trimmed = buffer.trim();
-            if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
+              // Process remaining buffer
+              if (buffer.trim()) {
+                const trimmed = buffer.trim();
+                if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
+                  try {
+                    const json = JSON.parse(trimmed.slice(6));
+                    const delta = json.choices?.[0]?.delta;
+                    const thinkingContent = delta?.reasoning_content;
+                    if (thinkingContent) {
+                      fullThinking += thinkingContent;
+                      iterationThinking += thinkingContent;
+                      controller.enqueue(
+                        encoder.encode(
+                          `data: ${JSON.stringify({ type: 'thinking', content: thinkingContent, model: modelInfo.name })}\n\n`
+                        )
+                      );
+                    }
+                    const content = delta?.content;
+                    if (content) {
+                      fullContent += content;
+                      iterationContent += content;
+                      controller.enqueue(
+                        encoder.encode(`data: ${JSON.stringify({ type: 'token', content, model: modelInfo.name })}\n\n`)
+                      );
+                    }
+                    if (json.usage) usageData = json.usage;
+                  } catch { /* skip */ }
+                }
+              }
+            } finally {
+              reader.releaseLock();
+            }
+
+            // ── If no tool calls, we're done ──────────────────
+            const completedToolCalls = Object.values(toolCallsAccumulator);
+            if (completedToolCalls.length === 0) {
+              break;
+            }
+
+            // ── Execute tool calls ─────────────────────────────
+            // Add assistant message with tool_calls to conversation
+            messages.push({
+              role: 'assistant',
+              content: iterationContent || '',
+              tool_calls: completedToolCalls.map(tc => ({
+                id: tc.id,
+                type: 'function' as const,
+                function: { name: tc.name, arguments: tc.arguments },
+              })),
+            });
+
+            // Execute each tool call
+            for (const tc of completedToolCalls) {
+              const startTime = Date.now();
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({ type: 'tool_executing', toolCallId: tc.id, name: tc.name })}\n\n`
+                )
+              );
+
+              let parsedArgs: Record<string, unknown> = {};
               try {
-                const json = JSON.parse(trimmed.slice(6));
-                const delta = json.choices?.[0]?.delta;
+                parsedArgs = JSON.parse(tc.arguments);
+              } catch { /* keep empty */ }
 
-                const thinkingContent = delta?.reasoning_content;
-                if (thinkingContent) {
-                  fullThinking += thinkingContent;
-                  controller.enqueue(
-                    encoder.encode(
-                      `data: ${JSON.stringify({ type: 'thinking', content: thinkingContent, model: modelInfo.name })}\n\n`
-                    )
-                  );
-                }
+              const result = await executeTool(tc.name, parsedArgs, toolToolContext);
+              const duration = Date.now() - startTime;
 
-                const content = delta?.content;
-                if (content) {
-                  fullContent += content;
-                  controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify({ type: 'token', content, model: modelInfo.name })}\n\n`)
-                  );
-                }
-                if (json.usage) {
-                  usageData = json.usage;
-                }
-              } catch {
-                // Not valid JSON — skip
-              }
+              allExecutedToolCalls.push({
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.arguments,
+                result: result.success ? result.result : result.error || 'Unknown error',
+                success: result.success,
+                duration,
+              });
+
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    type: 'tool_result',
+                    toolCallId: tc.id,
+                    name: tc.name,
+                    result: result.success ? result.result : result.error || 'Unknown error',
+                    success: result.success,
+                    duration,
+                    iteration: loopIteration,
+                  })}\n\n`
+                )
+              );
+
+              // Add tool result to messages
+              messages.push({
+                role: 'tool',
+                content: result.success ? result.result : `Error: ${result.error || 'Unknown error'}`,
+                tool_call_id: tc.id,
+              });
             }
           }
 
-          // Send final done event with usage and model info
-          const completedToolCalls = Object.values(toolCallsAccumulator);
+          // ── Send final done event ────────────────────────────
           controller.enqueue(
             encoder.encode(
               `data: ${JSON.stringify({
@@ -289,7 +373,9 @@ export async function POST(req: NextRequest) {
                 modelId: modelInfo.id,
                 provider: modelInfo.provider,
                 thinkingLength: fullThinking.length,
-                toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
+                toolCalls: allExecutedToolCalls.length > 0 ? allExecutedToolCalls : undefined,
+                loopIterations: loopIteration,
+                autonomous: !!autonomous,
               })}\n\n`
             )
           );
@@ -300,8 +386,7 @@ export async function POST(req: NextRequest) {
             )
           );
         } finally {
-          reader.releaseLock();
-
+          // Save assistant message
           if (dbConversationId && fullContent) {
             try {
               await db.message.create({
