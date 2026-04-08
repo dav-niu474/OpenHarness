@@ -1272,3 +1272,32 @@ Stage Summary:
 - 完成了完整的架构设计文档，包含五层递进架构、具体实现方案和实施路线图
 - 关键改进方向：增强System Prompt、工具智能选择(Tool Router)、Skill动态加载、任务分解图(DAG)、并行执行引擎、质量门控、自主Agent循环
 - 下一步：根据Phase 1计划实施代码改造
+
+---
+Task ID: architecture-design-v3
+Agent: Main Agent
+Task: 阅读《御舆》Claude Code架构剖析书，基于其五大设计原则重写Agent架构设计文档
+
+Work Log:
+- 使用web-reader获取了《御舆》第2、9、10、11、14、15章的完整内容
+- 深入分析了Claude Code的五大设计原则：循环优于递归、Schema驱动、渐进式权限、流式优先、可插拔扩展
+- 学习了buildTool工厂函数+Fail-closed默认值模式
+- 理解了四阶段权限管线（validateInput→checkPermissions→PreToolUse→用户确认）
+- 学习了四级渐进式压缩策略（Snip→Microcompact→ContextCollapse→Autocompact）
+- 理解了Coordinator-Worker多Agent架构（协调者只有4个工具：Agent/TaskStop/SendMessage/Output）
+- 学习了Plan模式（EnterPlanMode只读探索→ExitPlanMode执行）
+- 学习了SubAgent+Fork模式（字节级上下文继承、并行执行）
+- 学习了断路器模式（连续3次失败快速放弃）
+- 基于以上洞见完全重写了agent-architecture-design.md (v3.0)
+
+Stage Summary:
+- 架构设计文档从v2.0升级到v3.0，核心变化：
+  - 从"五层递进"架构调整为"六步渐进式"（对应Claude Code的六步构建路线图）
+  - 引入buildTool工厂函数+Fail-closed默认值
+  - 引入四阶段权限管线
+  - 引入四级渐进式压缩
+  - 引入Plan模式（先规划后执行）
+  - Coordinator-Worker替代简单的顺序协作
+  - 断路器+降级策略替代简单错误处理
+  - 依赖注入隔离I/O
+- 实施路线图更新为8周计划，6个Phase

@@ -1,844 +1,617 @@
-# OpenHarness Agent Architecture Design (v2.0)
+# OpenHarness Agent Architecture Design (v3.0)
+> 基于《御舆：解码 Agent Harness — Claude Code 架构深度剖析》的核心设计原则
 
-## 一、总体架构概览
+## 设计哲学（来自 Claude Code 的五大原则）
 
-OpenHarness Agent 系统采用**五层递进架构**，从简单到复杂逐步构建智能能力：
+### 原则一：循环优于递归
+对话循环采用 `while(true)` + State对象 + `continue` 管理状态流转。
+- **状态恢复更自然**：循环中只需重新赋值state，递归需要回退整个调用栈
+- **中止更可控**：AbortController在循环顶部是天然退出点
+- **调试更直观**：状态变化在固定位置，一个断点捕获所有转换
+
+### 原则二：Schema 驱动而非硬编码
+工具通过统一接口定义，所有验证、权限、描述从同一Schema派生。
+- **单一真相源**（Single Source of Truth）
+- **Fail-closed 默认值**：新工具默认不安全、需确认，显式声明安全性
+
+### 原则三：渐进式权限
+四阶段权限管线，每阶段可短路返回（Fail Fast）。
+```
+validateInput → checkPermissions → PreToolUse钩子 → 用户确认
+```
+
+### 原则四：流式优先
+所有数据通过 SSE ReadableStream 的 yield 传递，消费端逐条处理。
+
+### 原则五：可插拔扩展
+依赖注入隔离 I/O，核心不知道自己运行在哪里（CLI/Server/SDK）。
+
+---
+
+## 一、六大核心组件
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   Level 5: 自主Agent                          │
-│   自我规划 → 自我执行 → 自我反思 → 自我修正 → 循环迭代          │
-├─────────────────────────────────────────────────────────────┤
-│                   Level 4: 多Agent协同                        │
-│   任务分解 → 角色分配 → 并行/串行执行 → 结果融合 → 质量评审     │
-├─────────────────────────────────────────────────────────────┤
-│                   Level 3: Skill系统                          │
-│   智能检索 → 上下文注入 → 动态加载 → 效果评估 → 自适应          │
-├─────────────────────────────────────────────────────────────┤
-│                   Level 2: 工具调用                           │
-│   ReAct循环 → 工具编排 → 参数优化 → 结果验证 → 错误恢复         │
-├─────────────────────────────────────────────────────────────┤
-│                   Level 1: 单Agent交互                        │
-│   意图理解 → 推理链 → 结构化输出 → 对话管理                     │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│   ┌──────────┐     ┌──────────┐     ┌──────────┐                   │
+│   │ 对话循环  │────▶│ 权限管线  │────▶│ 工具系统  │                   │
+│   │ (Step 1) │◀────│ (Step 3) │     │ (Step 2) │                   │
+│   └────┬─────┘     └──────────┘     └────┬─────┘                   │
+│        │                                  │                         │
+│        │ 上下文过大                        │ 记忆存取                  │
+│        ▼                                  ▼                         │
+│   ┌──────────┐                        ┌──────────┐                  │
+│   │ 上下文   │                        │ 记忆系统  │                  │
+│   │ 管理     │                        │ (Step 5) │                  │
+│   │ (Step 4) │                        └──────────┘                  │
+│   └──────────┘                                                     │
+│                                                                     │
+│   ┌──────────┐                                                     │
+│   │ 钩子系统  │──── PreToolUse ──→ 权限管线                         │
+│   │ (Step 6) │──── PostToolUse ──→ 工具系统                         │
+│   └──────────┘                                                     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 二、Level 1: 单Agent交互
+## 二、Step 1: 对话循环（Agent Loop）
 
-### 2.1 当前问题
-- System Prompt 过于简单，缺少深度的角色定义和行为约束
-- 没有意图分类机制，所有请求都走同一条路径
-- 缺少对话质量保障（输出格式不统一、回答质量不稳定）
-- 思考过程未充分利用（thinking仅在部分模型支持）
+### 2.1 核心设计：AsyncGenerator 模式
 
-### 2.2 改进方案
+参考 Claude Code，对话循环是一个异步生成器，通过 `yield` 实时推送 SSE 事件：
 
-#### 2.2.1 增强型System Prompt架构
+```typescript
+// 循环状态对象
+interface LoopState {
+  messages: LLMMessage[];       // 对话消息列表
+  turnCount: number;            // 当前轮次
+  abortController: AbortController;  // 中止控制
+  toolCallsHistory: ToolCallRecord[];  // 工具调用历史
+  tokenUsage: TokenUsage;       // Token使用追踪
+}
+
+// 事件类型
+type StreamEvent =
+  | { type: 'thinking'; content: string; model: string }
+  | { type: 'token'; content: string; model: string }
+  | { type: 'tool_call'; name: string; arguments: string; done: boolean; iteration: number }
+  | { type: 'tool_executing'; name: string }
+  | { type: 'tool_result'; name: string; result: string; success: boolean; duration: number }
+  | { type: 'loop_iteration'; iteration: number; maxIterations: number }
+  | { type: 'task_plan'; title: string; steps: string[]; complexity: string }
+  | { type: 'done'; usage?: object; model: string; toolCalls?: any[] }
+  | { type: 'error'; error: string }
+```
+
+### 2.2 循环核心逻辑
 
 ```
-SystemPrompt = {
-  // 1. 身份层：我是谁
-  identity: AgentIdentity,
+while (turnCount < maxIterations) {
+  turnCount++;
   
-  // 2. 能力层：我能做什么
-  capabilities: AgentCapabilities,
+  // 1. 检查中止信号
+  if (abortController.signal.aborted) break;
   
-  // 3. 行为层：我该怎么行动
-  behaviors: AgentBehaviors,
+  // 2. 上下文管理：检查是否需要压缩
+  if (estimateTokens(messages) > tokenBudget * 0.9) {
+    messages = await compressContext(messages);
+    yield { type: 'context_compressed' };
+  }
   
-  // 4. 上下文层：当前环境信息
-  context: DynamicContext,
+  // 3. 流式调用模型
+  for await (const event of chatStream(messages, model, tools)) {
+    yield event;  // 透传给前端
+    // 累积 content / thinking / tool_calls
+  }
   
-  // 5. 约束层：我不该做什么
-  constraints: SafetyConstraints,
+  // 4. 没有工具调用 → 对话结束
+  if (toolCalls.length === 0) break;
   
-  // 6. 输出层：我该怎么表达
-  outputFormat: OutputGuidelines,
+  // 5. 权限检查 → 工具执行
+  for (const call of toolCalls) {
+    const permission = await checkPermission(call);
+    if (!permission.allowed) {
+      // 注入拒绝原因，让LLM知道为什么不能执行
+      messages.push({ role: 'tool', content: `Permission denied: ${permission.reason}`, tool_call_id: call.id });
+      continue;
+    }
+    const result = await executeTool(call);
+    yield { type: 'tool_result', ...result };
+    messages.push({ role: 'tool', content: result.data, tool_call_id: call.id });
+  }
 }
 ```
 
-#### 2.2.2 意图分类器（前置路由）
+### 2.3 与当前实现的对比
 
-在调用主LLM之前，先通过一个轻量级的意图分类确定处理路径：
-
-```typescript
-type UserIntent = 
-  | 'simple_qa'      // 简单问答 → 直接回答
-  | 'research'       // 研究调查 → 需要搜索
-  | 'code_help'      // 代码帮助 → 需要分析
-  | 'task_execute'   // 任务执行 → 需要工具
-  | 'creative'       // 创意生成 → 需要推理
-  | 'clarification'  // 澄清请求 → 需要追问
-```
-
-分类方式：不需要单独的模型调用，而是在system prompt中指导LLM自主判断，并在第一轮response中通过隐藏的thinking体现。
-
-#### 2.2.3 结构化思考链（Chain-of-Thought增强）
-
-```typescript
-interface ThinkingStructure {
-  // 第一层：理解
-  understanding: {
-    userGoal: string;           // 用户真正想要什么
-    complexity: 'simple' | 'moderate' | 'complex';
-    keyRequirements: string[];
-  };
-  
-  // 第二层：规划
-  plan: {
-    approach: string;           // 解决方案概述
-    steps: string[];            // 具体步骤
-    toolsNeeded: string[];      // 需要的工具
-    estimatedIterations: number;
-  };
-  
-  // 第三层：执行跟踪
-  execution: {
-    currentStep: number;
-    findings: string[];         // 每步的发现
-    adjustments: string[];      // 根据发现做的调整
-  };
-  
-  // 第四层：验证
-  verification: {
-    completeness: boolean;
-    accuracy: string;
-    missingInfo: string[];
-  };
-}
-```
-
-### 2.3 实现要点
-
-- **Prompt模板系统**：将Agent的systemPrompt拆分为多个可组合的模板section
-- **动态上下文注入**：根据对话历史和用户意图，动态调整prompt的各部分权重
-- **思考过程引导**：通过system prompt中的methodology section引导模型进行结构化思考
-- **对话标题自动生成**：使用LLM在第一次对话后自动生成精简标题
+| 特性 | 当前实现 | 目标实现 |
+|------|---------|---------|
+| 循环结构 | while loop + 简单 break | State对象 + 结构化状态转换 |
+| 上下文管理 | 无（全量历史传给LLM） | 渐进式压缩（snip→summary） |
+| 中止机制 | AbortController存在但未充分使用 | 每轮检查signal，finally清理 |
+| 错误恢复 | 工具失败直接记录，不重试 | 断路器（连续3次失败降级） |
+| Token追踪 | 仅在done事件记录 | 每轮检查预算，超限自动压缩 |
 
 ---
 
-## 三、Level 2: 工具调用
+## 三、Step 2: 工具系统（buildTool 工厂模式）
 
-### 3.1 当前问题
-- 工具定义是静态的，所有工具一次性全部传给LLM
-- 工具描述过于技术化，LLM难以准确选择合适的工具
-- 没有工具使用策略，LLM可能重复调用或遗漏关键工具
-- 错误恢复机制薄弱，工具失败后没有重试或替代方案
-- 工具编排能力弱，只能串行执行，不能并行
+### 3.1 buildTool 工厂函数
 
-### 3.2 改进方案
-
-#### 3.2.1 工具智能选择（Tool Router）
-
-**核心思想**：不让LLM一次性看到所有工具，而是先通过"工具目录"让它选择需要的工具类别，再提供具体工具定义。
-
-```
-Step 1: 提供工具目录（轻量级）
-┌────────────────────────────────────────┐
-│ Available Tool Categories:             │
-│ 1. 🔍 Search (WebSearch, WebFetch)    │
-│ 2. 📋 Task Management (Create, List,  │
-│    Update, Plan)                       │
-│ 3. 🤖 Agent Operations (Info, Message) │
-│ 4. 📚 Knowledge (Skill, Config)       │
-│ 5. 🧠 Planning (TaskPlan)             │
-│                                        │
-│ Which categories are relevant to the   │
-│ user's request?                        │
-└────────────────────────────────────────┘
-
-Step 2: 根据选择提供具体工具定义
-→ 仅注入用户选定类别的工具schema
-```
-
-**实现**：两阶段ReAct循环
-1. 第一轮：只提供ToolRouter工具（选择类别），不提供具体工具
-2. 第二轮及以后：根据第一轮选择注入具体工具
-
-#### 3.2.2 工具使用策略（Tool Usage Strategy）
+参考 Claude Code 的 `buildTool` 模式，工具定义保持精简，通用行为由工厂提供：
 
 ```typescript
-interface ToolStrategy {
-  // 工具选择指导
-  selection: {
-    // 什么时候用搜索
-    searchWhen: [
-      '需要最新信息',
-      '用户明确要求搜索',
-      '回答需要引用来源',
-      '涉及实时数据（价格、天气、新闻）',
-    ],
-    // 什么时候用任务管理
-    taskWhen: [
-      '请求包含多个步骤',
-      '需要追踪进度',
-      '用户提到"任务"、"计划"、"清单"',
-      '涉及需要后续跟进的事项',
-    ],
-    // 什么时候不需要工具
-    noToolWhen: [
-      '简单问答',
-      '代码解释/编写（模型自身能力足够）',
-      '基于已有上下文的推理',
-      '创意性任务（如写作建议）',
-    ],
-  };
-  
-  // 工具组合模式
-  composition: {
-    searchThenAnalyze: 'WebSearch → 分析结果 → TaskPlan（如果复杂）',
-    planThenExecute: 'TaskPlan → 逐步执行 → TaskUpdate',
-    researchReport: 'WebSearch(多次) → 整合 → WebFetch(关键页面)',
-  };
-  
-  // 错误恢复
-  errorRecovery: {
-    retry: '工具失败时，先重试一次（换参数）',
-    alternative: '如果工具不可用，尝试替代工具或方案',
-    gracefulDegradation: '无法使用工具时，基于已有知识回答并说明限制',
-  };
-}
-```
-
-#### 3.2.3 增强型ReAct循环
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Enhanced ReAct Loop                           │
-│                                                                  │
-│  ┌──────┐    ┌──────────┐    ┌──────────┐    ┌──────────────┐  │
-│  │ User │───▶│  Think   │───▶│   Act    │───▶│  Observe    │  │
-│  │Query │    │          │    │          │    │              │  │
-│  └──────┘    │ • 分析意图 │    │ • 选工具   │    │ • 解析结果    │  │
-│      ▲      │ • 制定计划 │    │ • 构参数   │    │ • 验证有效性  │  │
-│      │      │ • 预判结果 │    │ • 调用执行  │    │ • 更新知识    │  │
-│      │      └──────────┘    └──────────┘    └──────┬───────┘  │
-│      │                                               │          │
-│      │         ┌──────────┐                          │          │
-│      │         │ Reflect  │◀─────────────────────────┘          │
-│      │         │          │                                     │
-│      │         │ • 结果足够？                                     │
-│      │         │ • 需要更多信息？                                   │
-│      │         │ • 需要修正？                                     │
-│      │         │ • 工具调用失败？                                   │
-│      │         └────┬─────┘                                     │
-│      │              │                                            │
-│      │         ┌────┴────┐                                      │
-│      │         │         │                                       │
-│      │    ┌────▼───┐ ┌───▼────┐                                  │
-│      │    │  Done  │ │ Loop   │──→ Think                       │
-│      │    └────┬───┘ └────────┘                                  │
-│      │         │                                                 │
-│      └─────────┘                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**关键改进**：
-- **Reflection步骤**：每次工具调用后，模型需要判断是否需要继续、修正或终止
-- **上下文累积**：工具结果会累积，模型能"记住"之前的发现
-- **动态工具注入**：根据Reflection结果，可能需要新的工具
-- **最大迭代次数智能调整**：根据任务复杂度动态调整（简单任务1-2次，复杂任务5-8次）
-
-### 3.3 实现要点
-
-- **工具描述优化**：将工具描述从技术API文档风格改为"何时使用"风格
-- **参数示例**：每个工具定义中添加2-3个使用示例
-- **工具结果截断**：过长的工具结果自动摘要，避免token浪费
-- **工具调用日志**：每次工具调用记录到DB，用于后续分析和优化
-
----
-
-## 四、Level 3: Skill系统
-
-### 4.1 当前问题
-- Skills作为静态文本全部注入system prompt，占用大量token
-- 没有智能的skill检索机制，无法根据用户请求动态选择相关skill
-- Skill内容可能很长，简单注入会稀释核心prompt的效果
-- 没有skill使用效果反馈，无法知道skill是否真的帮助了回答
-
-### 4.2 改进方案
-
-#### 4.2.1 两级Skill系统
-
-```
-Level 1: Agent Bound Skills（绑定技能）
-  ├── 在system prompt中简要提及（仅名称+一句话描述）
-  ├── 不注入完整内容
-  └── 当LLM决定需要时，通过Skill工具加载完整内容
-
-Level 2: Dynamic Skills（动态技能）
-  ├── 根据用户意图智能推荐
-  ├── 通过Tool调用按需加载
-  └── 加载结果注入到对话上下文（而非system prompt）
-```
-
-#### 4.2.2 Skill智能匹配
-
-```typescript
-// Skill注册信息（DB中的轻量级索引）
-interface SkillIndex {
-  id: string;
+interface ToolDefinition {
   name: string;
-  shortDescription: string;    // 一句话描述（<50字）
-  triggers: string[];           // 触发关键词
-  category: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  
+  // 执行器
+  execute: (input: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
+  
+  // 安全标记（Fail-closed 默认值）
+  isReadOnly?: boolean;          // 默认 false
+  isDestructive?: boolean;       // 默认 false
+  isConcurrencySafe?: boolean;   // 默认 false
+  
+  // 权限
+  permissionMode?: 'open' | 'restricted' | 'sandboxed';
+  validateInput?: (input: unknown) => { valid: boolean; message?: string };
 }
 
-// System Prompt中的Skill引导
-const skillGuidance = `
-## Available Knowledge Modules
-You have access to specialized knowledge modules (Skills). When relevant:
-1. Use the Skill tool with action "list" to see available skills
-2. Use the Skill tool with action "load" and skillId to load a skill
-3. Only load skills that are directly relevant to the user's request
+const TOOL_DEFAULTS = {
+  isReadOnly: false,
+  isDestructive: false,
+  isConcurrencySafe: false,
+  permissionMode: 'restricted' as const,
+};
 
-Quick reference:
-- **commit**: Git commit conventions and best practices
-- **review**: Code review methodology and checklists  
-- **debug**: Systematic debugging approach
-- **web-search**: How to effectively search the web
-- **summarize**: Information summarization techniques
-- **plan**: Task planning and decomposition methods
-`;
+type ToolDef = Partial<Pick<ToolDefinition, 'isReadOnly' | 'isDestructive' | 'isConcurrencySafe'>>
+  & Omit<ToolDefinition, 'isReadOnly' | 'isDestructive' | 'isConcurrencySafe'>;
+
+function buildTool(def: ToolDef): ToolDefinition {
+  return { ...TOOL_DEFAULTS, ...def };
+}
 ```
 
-#### 4.2.3 Skill使用效果追踪
+### 3.2 工具描述优化（从API文档风格→使用指导风格）
+
+**当前问题**：工具描述是技术API风格，LLM难以判断"何时该用"。
+
+**改进**：每个工具描述包含三部分：
+1. **一句话描述**（<80字，面向LLM）
+2. **何时使用**（3-5个场景触发条件）
+3. **使用示例**（2-3个JSON示例）
 
 ```typescript
-interface SkillUsage {
-  skillId: string;
-  conversationId: string;
-  messageId: string;
-  loadedAt: Date;
-  wasHelpful: boolean;        // 简化：如果该消息的工具调用中加载了skill且最终回答质量高
-  userRating?: number;         // 未来可以加用户评分
+// 当前（技术风格）
+{
+  name: 'WebSearch',
+  description: 'Search the web for real-time information. Returns a list of search results with titles, URLs, and snippets.'
+}
+
+// 改进后（使用指导风格）
+{
+  name: 'WebSearch',
+  description: 'Search the web for real-time information.',
+  whenToUse: [
+    '需要最新信息或实时数据（新闻、价格、天气）',
+    '用户明确要求搜索或查找',
+    '回答需要引用来源或URL',
+    '需要验证某个事实是否仍然准确',
+  ],
+  whenNotToUse: [
+    '基于已有对话上下文就能回答的问题',
+    '纯数学/逻辑推理',
+    '创意写作或头脑风暴',
+  ],
+  examples: [
+    { query: 'Next.js 15 new features 2025' },
+    { query: 'TypeScript 5.8 release notes', recency_days: 30 },
+  ],
 }
 ```
 
-### 4.3 实现要点
+### 3.3 工具结果智能处理
 
-- **Skill轻量化注入**：System prompt中只放skill索引，不放完整内容
-- **按需加载**：通过Skill工具在对话过程中动态加载
-- **Skill摘要**：对于超长的skill内容，自动生成摘要版用于注入
-- **Skill过期机制**：对话超过一定轮次后，早期加载的skill内容可以丢弃以节省token
+```typescript
+const MAX_TOOL_RESULT_LENGTH = 3000;  // 单个工具结果最大字符数
+
+async function processToolResult(result: string): Promise<string> {
+  if (result.length <= MAX_TOOL_RESULT_LENGTH) return result;
+  
+  // 超长结果 → 生成摘要（而非简单截断）
+  const summary = await summarizeText(result, {
+    maxLength: MAX_TOOL_RESULT_LENGTH,
+    preserveStructure: true,  // 保留列表、标题等结构
+  });
+  return summary + `\n\n[Original result was ${result.length} chars, summarized]`;
+}
+```
 
 ---
 
-## 五、Level 4: 多Agent协同
+## 四、Step 3: 权限管线（四阶段短路检查）
 
-### 5.1 当前问题
-- 协作是简单的顺序执行（A做完→B做→C做→汇总）
-- Agent之间没有真正的沟通，只是把前一个agent的输出当作下一个的输入
-- Coordinator（协调者）的计划过于简单，只是一句话分配
-- Synthesis（综合）只是简单拼接，没有解决矛盾和去重
-- 没有角色专业化（所有agent用同一个system prompt模板）
-
-### 5.2 改进方案
-
-#### 5.2.1 真正的协作架构
+### 4.1 四阶段管线
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    Multi-Agent Orchestrator                    │
-│                    (协调引擎 - 不依赖LLM)                       │
-│                                                                │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │                   Phase 1: Analysis                     │  │
-│  │  LLM分析用户请求 → 生成任务分解图(Task Decomposition)     │  │
-│  │  → 识别子任务间的依赖关系                                 │  │
-│  │  → 确定哪些任务可以并行                                   │  │
-│  └─────────────────────┬──────────────────────────────────┘  │
-│                        │                                       │
-│  ┌─────────────────────▼──────────────────────────────────┐  │
-│  │                 Phase 2: Assignment                      │  │
-│  │  根据Agent能力矩阵分配任务 → 生成执行计划                  │  │
-│  │  → 考虑Agent的专业领域和可用工具                           │  │
-│  │  → 为每个Agent生成专门的系统提示                            │  │
-│  └─────────────────────┬──────────────────────────────────┘  │
-│                        │                                       │
-│  ┌─────────────────────▼──────────────────────────────────┐  │
-│  │              Phase 3: Parallel Execution                 │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐             │  │
-│  │  │ Agent A  │  │ Agent B  │  │ Agent C  │             │  │
-│  │  │(Search)  │  │(Analyze) │  │(Create)  │             │  │
-│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘             │  │
-│  │       │              │              │                    │  │
-│  │       └──────────────┴──────────────┘                    │  │
-│  │                      │                                   │  │
-│  │  ┌───────────────────▼────────────────────────┐         │  │
-│  │  │       Phase 4: Review & Quality Gate       │         │  │
-│  │  │  自审Agent检查所有输出 → 发现问题 → 反馈修正  │         │  │
-│  │  └───────────────────┬────────────────────────┘         │  │
-│  │                      │                                   │  │
-│  │  ┌───────────────────▼────────────────────────┐         │  │
-│  │  │       Phase 5: Synthesis & Delivery         │         │  │
-│  │  │  合成Agent整合所有输出 → 去重 → 格式化 → 交付  │         │  │
-│  │  └─────────────────────────────────────────────┘         │  │
-│  └────────────────────────────────────────────────────────┘  │
+│  工具调用请求                                                 │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────────┐                                     │
+│  │ 阶段1: validateInput  │ ──失败──→ 拒绝: "参数不合法: ..."    │
+│  │ 输入校验（Schema验证） │                                     │
+│  └──────────┬──────────┘                                     │
+│             │ 通过                                             │
+│             ▼                                                 │
+│  ┌─────────────────────┐                                     │
+│  │ 阶段2: checkPermissions│ ──拒绝──→ 拒绝: "权限不足: ..."     │
+│  │ 权限模式检查         │                                     │
+│  └──────────┬──────────┘                                     │
+│             │ 通过                                             │
+│             ▼                                                 │
+│  ┌─────────────────────┐                                     │
+│  │ 阶段3: runHooks       │ ──block──→ 拒绝: "钩子拦截: ..."     │
+│  │ PreToolUse 钩子执行   │                                     │
+│  └──────────┬──────────┘                                     │
+│             │ 通过/无钩子                                        │
+│             ▼                                                 │
+│  ┌─────────────────────┐                                     │
+│  │ 阶段4: canUseTool     │                                     │
+│  │ 根据权限模式决定       │                                     │
+│  │ open → 自动通过        │                                     │
+│  │ restricted → 自动通过  │                                     │
+│  │ sandboxed → 仅只读通过 │                                     │
+│  └──────────┬──────────┘                                     │
+│             │                                                 │
+│             ▼                                                 │
+│       执行工具 ✅                                               │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-#### 5.2.2 任务分解图（Task Decomposition Graph）
+**关键设计**：早期拒绝（Fail Fast）。输入不合法就不检查权限，权限拒绝就不执行钩子。
+
+---
+
+## 五、Step 4: 上下文管理（渐进式压缩）
+
+### 5.1 四级渐进压缩策略
+
+参考 Claude Code 的四级压缩（Snip → Microcompact → Context Collapse → Autocompact）：
 
 ```typescript
-interface TaskDecomposition {
-  goal: string;                    // 用户原始目标
-  subtasks: Subtask[];
-  dependencies: Dependency[];      // 子任务间的依赖关系
-  parallelGroups: string[][];      // 可以并行执行的分组
+interface CompressionStrategy {
+  name: string;
+  trigger: (tokenCount: number, limit: number) => boolean;
+  compress: (messages: LLMMessage[]) => Promise<LLMMessage[]>;
 }
 
-interface Subtask {
-  id: string;
-  description: string;
-  assignedAgent: string;           // 分配给的agent
-  requiredTools: string[];         // 需要的工具
-  requiredSkills: string[];       // 需要的skill
-  estimatedComplexity: 'low' | 'medium' | 'high';
-  dependsOn: string[];            // 依赖的subtask IDs
-  outputFormat: string;           // 期望输出格式
-}
+// 策略1: Snip（最廉价，70%阈值触发）
+const snipStrategy: CompressionStrategy = {
+  name: 'snip',
+  trigger: (count, limit) => count > limit * 0.7,
+  async compress(messages) {
+    // 保留: system prompt + 最近15条消息 + 首条用户消息
+    const system = messages.filter(m => m.role === 'system');
+    const recent = messages.slice(-15);
+    const firstUser = messages.find(m => m.role === 'user');
+    return [...system, firstUser, ...recent];
+  },
+};
 
-interface Dependency {
-  from: string;                   // subtask ID
-  to: string;                     // subtask ID
-  type: 'sequential' | 'shared_output' | 'review';
+// 策略2: Summary（中等成本，90%阈值触发）
+const summaryStrategy: CompressionStrategy = {
+  name: 'summary',
+  trigger: (count, limit) => count > limit * 0.9,
+  async compress(messages) {
+    // 使用LLM生成对话摘要
+    const oldMessages = messages.slice(1, -10);
+    const summary = await generateSummary(oldMessages);
+    return [
+      messages[0],  // system prompt
+      { role: 'user', content: `[Previous conversation summary]\n${summary}` },
+      ...messages.slice(-10),  // 最近10条保留原文
+    ];
+  },
+};
+```
+
+### 5.2 Token预算管理
+
+```typescript
+class TokenBudget {
+  private readonly maxInputTokens: number;  // 模型上下文窗口
+  private readonly systemPromptTokens: number;  // 系统提示占用
+  private readonly reservedTokens: number = 1000;  // 预留给回复
+  
+  get availableForMessages(): number {
+    return this.maxInputTokens - this.systemPromptTokens - this.reservedTokens;
+  }
+  
+  shouldCompress(currentTokens: number): boolean {
+    return currentTokens > this.availableForMessages * 0.75;
+  }
 }
 ```
 
-#### 5.2.3 Agent专业化（Specialized Prompts）
+---
 
-每个Agent不再使用通用的system prompt，而是根据其角色和分配的任务生成专门的prompt：
+## 六、Step 5: 记忆系统
+
+### 6.1 三层记忆架构
+
+```
+┌──────────────────────────────────────────────┐
+│  Layer 1: 对话内记忆（自动）                    │
+│  - System Prompt 中的 Agent Identity           │
+│  - 对话历史（最近N轮，超出自动压缩）             │
+│  - 工具调用结果（当前会话内）                    │
+├──────────────────────────────────────────────┤
+│  Layer 2: 会话间记忆（DB持久化）                 │
+│  - Memory 表（key-value 键值对）                │
+│  - 用户偏好（"我喜欢用Jest"）                   │
+│  - 项目约定（"使用camelCase命名"）              │
+│  - 重要决策（"选择Redis作为缓存"）               │
+├──────────────────────────────────────────────┤
+│  Layer 3: 知识库（Skill系统）                    │
+│  - 专业知识模块（代码审查、调试方法论等）          │
+│  - 按需加载，不占用默认上下文                    │
+└──────────────────────────────────────────────┘
+```
+
+### 6.2 记忆注入策略
 
 ```typescript
-function buildSpecializedPrompt(
-  baseAgent: AgentConfig,
-  task: Subtask,
-  globalContext: string,
-  previousResults: Map<string, string>
+function buildMemorySection(agentId: string): string {
+  // 从DB加载该Agent的记忆
+  const memories = await db.memory.findMany({
+    where: { agentId },
+    orderBy: { updatedAt: 'desc' },
+    take: 10,  // 最多注入10条记忆
+  });
+  
+  if (memories.length === 0) return '';
+  
+  return `
+## Memory (Your Persistent Knowledge)
+The following facts have been learned from previous conversations. Use them when relevant:
+${memories.map(m => `- **${m.key}**: ${m.value}`).join('\n')}
+`;
+}
+```
+
+---
+
+## 七、Step 6: Plan模式（规划与执行分离）
+
+### 7.1 核心理念：先规划后执行
+
+参考 Claude Code 的 EnterPlanMode/ExitPlanMode 设计：
+
+```
+用户请求 ──→ 判断任务复杂度
+                │
+        ┌───────┴───────┐
+        │               │
+    简单任务          复杂任务
+        │               │
+   直接执行        ┌────┴────┐
+                   │ Plan模式 │
+                   │（只读探索）│
+                   └────┬────┘
+                        │
+                   1. 理解需求
+                   2. 分析上下文
+                   3. 制定方案
+                   4. 呈现计划
+                        │
+                   用户确认？
+                   是 → 执行
+                   否 → 修改计划
+```
+
+### 7.2 Plan模式的System Prompt
+
+```typescript
+const planModePrompt = `
+## Plan Mode — Read-Only Exploration
+
+You are now in PLANNING MODE. In this mode, you should NOT execute any actions.
+Instead, thoroughly analyze the request and create a structured plan.
+
+### Planning Steps:
+1. **Understand**: What is the user REALLY asking for? Identify implicit requirements.
+2. **Analyze**: What information do you need? What tools would be useful?
+3. **Explore**: If needed, use WebSearch to gather information (read-only).
+4. **Plan**: Create a clear, step-by-step execution plan.
+5. **Present**: Show the plan using TaskPlan tool with clear steps.
+
+### Important:
+- Do NOT use destructive tools (Write, Edit, Bash) in plan mode
+- Focus on understanding the full picture before acting
+- Consider edge cases and potential issues
+- Present alternatives if multiple approaches exist
+`;
+```
+
+---
+
+## 八、多Agent协同（Coordinator-Worker 架构）
+
+### 8.1 Coordinator模式（参考 Claude Code）
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Coordinator（协调者）                                         │
+│                                                               │
+│  只拥有4个工具：                                                │
+│  ┌─────────────────────────────────────────────┐              │
+│  │ 1. Agent    — 创建Worker并分配任务              │              │
+│  │ 2. TaskStop — 停止正在运行的Worker            │              │
+│  │ 3. Message  — 向Worker发送消息（协作）          │              │
+│  │ 4. Output   — 输出结构化最终结果                │              │
+│  └─────────────────────────────────────────────┘              │
+│                                                               │
+│  没有文件/搜索等执行工具 → 不会自己动手做事                        │
+│  → 职责是"编排"而非"执行"                                        │
+└───────────────────┬─────────────────────────────────────────┘
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+  ┌──────────┐ ┌──────────┐ ┌──────────┐
+  │ Worker A  │ │ Worker B  │ │ Worker C  │
+  │ (Research)│ │ (Analysis)│ │ (Writing) │
+  │           │ │           │ │           │
+  │ 有完整工具集│ │ 有完整工具集│ │ 有完整工具集│
+  │ 专业system │ │ 专业system │ │ 专业system │
+  │   prompt   │ │   prompt   │ │   prompt   │
+  └─────┬─────┘ └─────┬─────┘ └─────┬─────┘
+        │             │             │
+        └─────────────┼─────────────┘
+                      ▼
+              Scratchpad（共享协作空间）
+```
+
+### 8.2 Worker的专业化Prompt
+
+```typescript
+function buildWorkerPrompt(
+  agent: AgentConfig,
+  task: string,
+  scratchpadContext: string,
 ): string {
   return `
-# Role: ${baseAgent.name} — ${task.description}
+# Role: ${agent.name}
+${agent.agentMd}
 
-## Your Specific Mission
-${task.description}
+## Your Current Task
+${task}
 
-## Expected Output
-${task.outputFormat}
+## Context from Coordinator
+${scratchpadContext}
 
-## Available Tools
-${getRelevantToolDescriptions(task.requiredTools)}
-
-## Context from Other Agents
-${formatPreviousResults(previousResults, task.dependsOn)}
-
-## Collaboration Guidelines
+## Collaboration Rules
 - Focus ONLY on your assigned task
-- If you discover information relevant to other agents' tasks, note it in a "Notes for Team" section
-- If your task cannot be completed (missing info, blocked), clearly state what's needed
-- Be thorough but concise — other agents will build on your work
+- Write findings to the scratchpad using TaskUpdate
+- If blocked, describe what you need — don't guess
+- Be thorough but concise
+- Use WebSearch/WebFetch when you need external information
 `;
 }
 ```
 
-#### 5.2.4 并行执行引擎
+### 8.3 与当前实现的对比
 
-```typescript
-async function executeParallel(
-  tasks: Subtask[],
-  agents: Map<string, AgentConfig>,
-  context: SharedContext
-): Promise<Map<string, AgentResult>> {
-  // 1. 构建DAG（有向无环图）
-  const dag = buildDAG(tasks);
-  
-  // 2. 拓扑排序，确定执行层级
-  const layers = topologicalSort(dag);
-  
-  // 3. 逐层执行，同层内并行
-  const results = new Map<string, AgentResult>();
-  
-  for (const layer of layers) {
-    // 并行执行同层任务
-    const layerPromises = layer.map(taskId => {
-      const task = tasks.find(t => t.id === taskId)!;
-      const agent = agents.get(task.assignedAgent)!;
-      
-      return executeSingleAgent(agent, task, results, context);
-    });
-    
-    const layerResults = await Promise.all(layerPromises);
-    layerResults.forEach((result, i) => {
-      results.set(layer[i], result);
-    });
-    
-    // 质量门控：检查本层结果是否可接受
-    await qualityGate(layer, results, context);
-  }
-  
-  return results;
-}
-```
-
-#### 5.2.5 质量门控（Quality Gate）
-
-```typescript
-async function qualityGate(
-  taskIds: string[],
-  results: Map<string, AgentResult>,
-  context: SharedContext
-): Promise<{ passed: boolean; feedback?: string }> {
-  // 使用LLM快速评估每个结果
-  for (const taskId of taskIds) {
-    const result = results.get(taskId)!;
-    const task = context.tasks.find(t => t.id === taskId)!;
-    
-    const evaluation = await evaluateResult(task, result);
-    
-    if (!evaluation.passed) {
-      // 返回反馈给agent重新执行
-      if (evaluation.retryCount < 2) {
-        const retryResult = await retryWithFeedback(
-          task, evaluation.feedback
-        );
-        results.set(taskId, retryResult);
-      }
-      // 否则接受当前结果并继续
-    }
-  }
-  
-  return { passed: true };
-}
-```
-
-### 5.3 实现要点
-
-- **依赖分析**：Coordinator需要识别子任务间的依赖关系
-- **并行执行**：使用Promise.all并行执行无依赖关系的任务
-- **共享上下文**：所有agent共享一个context对象，agent可以向其中写入发现
-- **流式输出**：每个agent的输出都实时流式推送给用户
-- **时间预算**：设置总时间上限，避免某个agent耗时过长
-
----
-
-## 六、Level 5: 自主Agent
-
-### 6.1 概念
-
-自主Agent是最高级别的Agent能力，具有以下特征：
-- **自我规划**：不需要用户逐步指导，能自主制定执行计划
-- **自我执行**：按照计划自主调用工具、执行操作
-- **自我反思**：在执行过程中持续评估自己的工作质量
-- **自我修正**：发现问题后能自主调整策略
-- **持续迭代**：直到任务完成或达到预设条件才停止
-
-### 6.2 自主Agent循环
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Autonomous Agent Loop                         │
-│                                                                  │
-│  ┌─────────────┐                                                │
-│  │   START     │ ◀────────────────────────────────────────────┐  │
-│  │  User Goal  │                                              │  │
-│  └──────┬──────┘                                              │  │
-│         │                                                      │  │
-│         ▼                                                      │  │
-│  ┌─────────────┐     ┌──────────────┐     ┌──────────────┐   │  │
-│  │   PLAN      │────▶│   EXECUTE    │────▶│   OBSERVE    │   │  │
-│  │             │     │              │     │              │   │  │
-│  │ • 分解目标   │     │ • 调用工具    │     │ • 收集结果    │   │  │
-│  │ • 制定步骤   │     │ • 生成内容    │     │ • 评估质量    │   │  │
-│  │ • 预估资源   │     │ • 记录进度    │     │ • 对比预期    │   │  │
-│  │ • 识别风险   │     │ • 更新状态    │     │ • 发现异常    │   │  │
-│  └─────────────┘     └──────────────┘     └──────┬───────┘   │  │
-│                                                     │           │  │
-│         ┌───────────────────────────────────────────┘           │  │
-│         ▼                                                       │  │
-│  ┌─────────────┐                                                │  │
-│  │  REFLECT    │                                                │  │
-│  │             │                                                │  │
-│  │ • 目标达成？ │──── Yes ──▶ ┌─────────────┐                  │  │
-│  │ • 质量合格？ │             │   REPORT    │                  │  │
-│  │ • 有遗漏？   │             │  最终报告    │                  │  │
-│  │ • 需要修正？ │             └─────────────┘                  │  │
-│  │             │                                                 │  │
-│  │ │ No        │                                                 │  │
-│  │ ▼           │                                                 │  │
-│  │ ┌─────────┐ │     ┌─────────────┐                           │  │
-│  │ │ REVISE  │─┼────▶│   REPLAN    │──────────────────────────┘  │
-│  │ │         │ │     │  调整计划    │                              │
-│  │ │ 修正错误 │ │     │  补充步骤    │                              │
-│  │ │ 优化方法 │ │     │  重新分配    │                              │
-│  │ └─────────┘ │     └─────────────┘                              │
-│  └─────────────┘                                                │
-│                                                                  │
-│  [终止条件]: 达到目标 / 超过最大迭代 / 用户中断 / 不可恢复错误      │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 6.3 自主Agent的System Prompt设计
-
-```typescript
-const autonomousSystemPrompt = `
-# 自主Agent模式
-
-你是一个高度自主的AI Agent。你可以在最小化用户指导的情况下，独立完成复杂的多步骤任务。
-
-## 工作原则
-
-### 1. 先理解，再行动
-- 仔细分析用户的最终目标，而不仅仅是字面请求
-- 识别隐含的需求和约束条件
-- 如果目标不明确，主动提出澄清问题（仅限第一次交互）
-
-### 2. 制定清晰计划
-- 将复杂任务分解为可执行的子任务
-- 为每个子任务设定明确的完成标准
-- 识别子任务间的依赖关系
-- 向用户展示你的计划概要
-
-### 3. 系统化执行
-- 严格按计划执行，但保留灵活调整的空间
-- 每完成一个步骤后评估结果
-- 使用合适的工具提高效率和准确性
-- 记录关键发现和决策
-
-### 4. 持续反思
-- 定期检查：我是否偏离了目标？
-- 评估：当前结果是否满足质量标准？
-- 识别：有哪些遗漏或需要改进的地方？
-- 调整：是否需要修改计划？
-
-### 5. 质量保障
-- 验证工具返回结果的准确性
-- 交叉检查关键信息
-- 确保最终输出完整且可直接使用
-- 如果无法完成某些部分，明确说明
-
-## 工具使用策略
-
-- **搜索工具**：需要最新信息、数据验证、来源引用时使用
-- **任务管理**：多步骤任务使用TaskPlan创建计划并跟踪进度
-- **Skill工具**：需要专业知识或特定方法论时加载
-
-## 输出规范
-
-- 使用清晰的结构化格式（标题、列表、表格）
-- 重要结论和发现用**加粗**标注
-- 包含来源引用和参考链接
-- 最后提供简洁的执行总结
-`;
-```
-
-### 6.4 自主模式 vs 普通模式的区别
-
-| 特性 | 普通模式 | 自主模式 |
+| 特性 | 当前实现 | 目标实现 |
 |------|---------|---------|
-| 循环次数 | 1-5次 | 无限制（直到完成） |
-| 计划 | 可选 | 必须 |
-| 工具调用 | 被动（LLM决定） | 主动（按计划执行） |
-| 反思 | 无 | 每轮都有 |
-| 进度跟踪 | 无 | TaskPlan实时更新 |
-| 终止条件 | 无工具调用 | 目标达成确认 |
-| 中间报告 | 无 | 每完成大步骤汇报 |
-| 错误处理 | 失败即停止 | 重试+替代方案 |
-
-### 6.5 实现方案
-
-#### 6.5.1 自主模式API端点
-
-```typescript
-// POST /api/agent/chat/autonomous
-interface AutonomousRequest {
-  agentId: string;
-  message: string;
-  conversationId?: string;
-  modelId?: string;
-  skillIds?: string[];
-  
-  // 自主模式专属参数
-  maxIterations?: number;     // 最大迭代次数（默认20）
-  timeBudget?: number;         // 时间预算秒数（默认300）
-  autoPlan: boolean;           // 是否自动制定计划（默认true）
-  requireConfirmation: boolean; // 是否需要用户确认计划后执行
-}
-```
-
-#### 6.5.2 自主循环实现
-
-```typescript
-async function autonomousLoop(params: {
-  messages: LLMMessage[];
-  tools: ToolDefinition[];
-  maxIterations: number;
-  timeBudget: number;
-  sendSSE: (data: any) => void;
-}): Promise<AutonomousResult> {
-  const startTime = Date.now();
-  let iteration = 0;
-  let goalAchieved = false;
-  const plan: TaskPlan | null = null;
-  
-  while (iteration < params.maxIterations) {
-    // 检查时间预算
-    if (Date.now() - startTime > params.timeBudget * 1000) {
-      return { completed: false, reason: 'time_budget_exceeded' };
-    }
-    
-    iteration++;
-    
-    // 1. Think（思考当前状态和下一步行动）
-    const thought = await think(messages, iteration, plan);
-    params.sendSSE({ type: 'thinking', content: thought, iteration });
-    
-    // 2. Act（执行工具调用或生成内容）
-    const action = await act(messages, params.tools);
-    
-    // 3. Observe（观察结果）
-    if (action.hasToolCalls) {
-      const results = await executeTools(action.toolCalls);
-      params.sendSSE({ type: 'tool_results', results });
-      messages.push(...results.asMessages);
-    }
-    
-    // 4. Reflect（反思）
-    const reflection = await reflect(messages, plan);
-    params.sendSSE({ type: 'reflection', content: reflection });
-    
-    if (reflection.goalAchieved) {
-      goalAchieved = true;
-      break;
-    }
-    
-    if (reflection.needsReplan) {
-      // 重新规划
-      const newPlan = await replan(messages, reflection);
-      params.sendSSE({ type: 'replan', plan: newPlan });
-    }
-    
-    // 如果没有工具调用且有内容输出，检查是否完成
-    if (!action.hasToolCalls && action.content) {
-      params.sendSSE({ type: 'content', content: action.content });
-      
-      // 向用户确认是否满意（可选）
-      if (params.requireConfirmation && iteration > 1) {
-        const userSatisfied = await checkUserSatisfaction();
-        if (userSatisfied) break;
-      }
-    }
-  }
-  
-  return { completed: goalAchieved, iterations: iteration };
-}
-```
+| 协作模式 | 顺序A→B→C→拼接 | Coordinator-Worker并行 |
+| Agent间通信 | 仅前输出作后输入 | Scratchpad共享空间+SendMessage |
+| Coordinator角色 | LLM生成一句话计划 | 专职协调者，只有4个工具 |
+| Worker工具 | 与主Agent相同 | 按任务类型过滤（Worker只看到需要的工具） |
+| 结果综合 | LLM简单拼接 | Coordinator整合，解决矛盾和去重 |
 
 ---
 
-## 七、跨层共享组件
+## 九、自主Agent模式
 
-### 7.1 上下文管理器（Context Manager）
+### 9.1 Plan → Execute → Observe → Reflect 循环
 
-```typescript
-class ContextManager {
-  private messages: LLMMessage[] = [];
-  private tokenBudget: number;
-  
-  // 智能裁剪：当token超限时，优先保留：
-  // 1. System prompt
-  // 2. 最近的用户消息
-  // 3. 最近的助手回复（带thinking和工具调用）
-  // 4. 早期的对话摘要（而非原文）
-  trimToFitBudget(): void { ... }
-  
-  // 摘要生成：将早期对话压缩为摘要
-  summarizeOldMessages(keepLast: number): void { ... }
-  
-  // 上下文注入：动态添加相关信息
-  injectContext(context: ContextBlock): void { ... }
-}
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  用户目标                                                        │
+│     │                                                            │
+│     ▼                                                            │
+│  ┌─────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐ │
+│  │  PLAN   │────▶│ EXECUTE  │────▶│ OBSERVE  │────▶│ REFLECT  │ │
+│  │         │     │          │     │          │     │          │ │
+│  │ TaskPlan│     │ 工具调用   │     │ 收集结果   │     │ 目标达成?│ │
+│  │ 展示计划 │     │ 生成内容   │     │ 验证质量   │     │ 需要修正?│ │
+│  └─────────┘     └──────────┘     └──────────┘     └────┬─────┘ │
+│       │                                                │        │
+│       │                                        ┌────────┤        │
+│       │                                        │ Yes    │ No     │
+│       │                                        ▼        ▼        │
+│       │                                   ┌────────┐ ┌────────┐ │
+│       │                                   │ REPORT │ │ REPLAN │ │
+│       │                                   │ 最终   │ │ 调整   │ │
+│       │                                   │ 报告   │ │ 计划   │ │
+│       │                                   └────────┘ └───┬────┘ │
+│       │                                              │       │
+│       └──────────────────────────────────────────────┘       │
+│                                                              │
+│  终止条件: 目标达成 / maxIterations / timeBudget / 用户中断      │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 工具执行器增强
+### 9.2 自主模式 vs 普通模式
 
-```typescript
-class EnhancedToolExecutor {
-  // 工具执行带超时和重试
-  async executeWithRetry(
-    tool: string,
-    args: any,
-    maxRetries: number = 1
-  ): Promise<ToolResult> { ... }
-  
-  // 工具结果验证
-  validateResult(tool: string, result: string): ValidationResult { ... }
-  
-  // 工具使用统计
-  recordUsage(tool: string, success: boolean, duration: number): void { ... }
-}
-```
-
-### 7.3 消息构建器（Message Builder）
-
-```typescript
-class MessageBuilder {
-  // 构建增强型system prompt
-  buildSystemPrompt(config: {
-    agent: AgentConfig;
-    mode: 'normal' | 'autonomous' | 'collaborative';
-    intent?: UserIntent;
-    skills?: SkillIndex[];
-    taskPlan?: TaskPlan;
-  }): string { ... }
-  
-  // 构建工具调用消息
-  buildToolCallMessage(calls: ToolCall[]): LLMMessage { ... }
-  
-  // 构建工具结果消息
-  buildToolResultMessage(results: ToolResult[]): LLMMessage { ... }
-}
-```
+| | 普通模式 | 自主模式 |
+|---|---|---|
+| 触发方式 | 用户发送消息 | 用户发送消息 + autonomous=true |
+| 计划 | 可选（复杂任务自动） | 必须（第一步就是TaskPlan） |
+| 循环上限 | 5次 | 20次（可配置） |
+| 时间预算 | 90s（单次API调用） | 300s（整个任务） |
+| Reflection | 无 | 每轮都有（内嵌在prompt中） |
+| 进度追踪 | 无 | TaskPlan实时更新到UI |
+| 中间汇报 | 无 | 每完成大步骤向用户报告 |
 
 ---
 
-## 八、实施路线图
+## 十、实施路线图（六步渐进式）
 
-### Phase 1: 基础能力增强（当前迭代）
-- [x] 数据库持久化修复
-- [x] 思考过程显示/折叠
-- [ ] **System Prompt优化**：增强角色定义和行为引导
-- [ ] **工具描述优化**：从技术API文档风格改为使用指导风格
-- [ ] **增强型ReAct循环**：添加Reflection步骤
-- [ ] **工具结果摘要**：过长结果自动截断
+### Phase 1: 对话循环 + 工具系统（Week 1-2）
+- [ ] 重构 `stream/route.ts`：State对象模式
+- [ ] 实现 `buildTool` 工厂函数
+- [ ] 优化工具描述（使用指导风格）
+- [ ] 工具结果智能截断/摘要
+- [ ] 错误恢复 + 断路器（连续3次失败）
+- [ ] Token预算检查
 
-### Phase 2: Skill系统升级
-- [ ] **Skill轻量化**：System prompt中只放索引
-- [ ] **动态Skill加载**：通过Skill工具按需加载
-- [ ] **Skill推荐**：根据用户意图推荐相关skill
+### Phase 2: 权限管线 + 上下文管理（Week 3）
+- [ ] 四阶段权限检查
+- [ ] Snip压缩策略（70%阈值）
+- [ ] Summary压缩策略（90%阈值）
+- [ ] Token计数器
 
-### Phase 3: 多Agent协同升级
-- [ ] **任务分解图**：DAG结构代替简单列表
-- [ ] **并行执行引擎**：Promise.all并行
-- [ ] **质量门控**：每层结果自动评估
-- [ ] **专业化Prompt**：根据角色和任务定制
+### Phase 3: 记忆系统 + Skill系统（Week 4）
+- [ ] 记忆注入到System Prompt
+- [ ] Skill轻量化（只放索引）
+- [ ] 按需加载Skill
 
-### Phase 4: 自主Agent
-- [ ] **自主模式API**：新端点 /api/agent/chat/autonomous
-- [ ] **自主循环**：Plan→Execute→Observe→Reflect
-- [ ] **进度追踪**：TaskPlan实时更新
-- [ ] **用户确认机制**：可选的中间确认点
-- [ ] **时间预算**：超时自动停止和总结
+### Phase 4: Plan模式（Week 5）
+- [ ] Plan模式System Prompt
+- [ ] TaskPlan工具增强
+- [ ] 用户确认机制
+
+### Phase 5: 多Agent协同升级（Week 6-7）
+- [ ] Coordinator-Worker架构
+- [ ] Scratchpad共享空间
+- [ ] 并行Worker执行
+- [ ] Worker专业化Prompt
+
+### Phase 6: 自主Agent（Week 8）
+- [ ] 自主循环（Plan→Execute→Observe→Reflect）
+- [ ] 进度追踪UI
+- [ ] 时间预算
+- [ ] 中间汇报
 
 ---
 
-## 九、关键设计决策
+## 十一、关键设计决策总结
 
-1. **渐进式复杂度**：从Level 1到Level 5逐步叠加能力，不是一次性重写
-2. **向后兼容**：所有改进都在现有API框架内，不需要破坏性变更
-3. **Prompt Engineering为主**：大部分改进通过优化prompt实现，不需要新的模型
-4. **SSE流式体验**：所有模式都保持流式输出，用户体验一致
-5. **Token效率**：通过智能裁剪、按需加载、结果摘要来控制token使用
-6. **错误恢复**：每个层级都有错误处理和恢复机制
-7. **可观测性**：所有agent行为（工具调用、skill加载、规划决策）都通过SSE推送给前端
+| 决策点 | 选择 | 原因（来自Claude Code） |
+|--------|------|----------------------|
+| 循环 vs 递归 | 循环（State对象） | 状态恢复自然、中止可控、调试直观 |
+| 工具默认安全性 | Fail-closed | 新工具默认不安全，显式声明才安全 |
+| 权限检查 | 四阶段管线 | 早期拒绝（Fail Fast），避免浪费 |
+| 上下文压缩 | 渐进式 | 信息损失相对，保留最有价值的部分 |
+| 协作模式 | Coordinator-Worker | 协调者只编排不执行，避免混乱 |
+| Plan模式 | 先规划后执行 | 避免"过早行动"，零成本纠错 |
+| 错误处理 | 断路器 + 降级 | 连续失败3次快速放弃，而非无限重试 |
+| 流式传输 | SSE yield | 天然适配"生产-消费"模型 |
+| I/O隔离 | 依赖注入 | 核心不知道运行在哪里 |
