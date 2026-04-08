@@ -17,6 +17,7 @@ export type StreamEvent =
   | { type: 'loop_iteration'; iteration: number; maxIterations: number; model: string }
   | { type: 'planning'; content: string }
   | { type: 'task_plan'; title: string; steps: string[]; complexity: string; completedSteps: number[] }
+  | { type: 'context_compressed'; strategy: 'snip' | 'summary'; originalTokens: number; compressedTokens: number; savedRatio: number }
   | { type: 'done'; usage?: TokenUsage; model: string; modelId: string; provider: string; thinkingLength: number; toolCalls?: ToolCallRecord[]; loopIterations: number; autonomous?: boolean; error?: string }
   | { type: 'error'; error: string };
 
@@ -147,6 +148,21 @@ export const DEFAULT_TOKEN_BUDGET: TokenBudget = {
   systemPromptTokens: 2000,
   reservedTokens: 2000,
 };
+
+// ── Permission Pipeline Types ─────────────────────────────────────
+
+export interface PermissionPipelineConfig {
+  mode: 'default' | 'auto' | 'plan';
+  agentId?: string;
+  autonomous?: boolean;
+}
+
+export interface PermissionResult {
+  allowed: boolean;
+  reason?: string;
+  stage?: string;
+  requiresConfirmation?: boolean;
+}
 
 // ── Helper: Convert AgentTool to OpenAI function-calling format ─────
 

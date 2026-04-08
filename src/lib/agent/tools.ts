@@ -8,6 +8,7 @@
 import { db } from '@/lib/db';
 import ZAI from 'z-ai-web-dev-sdk';
 import type { AgentTool, ToolResult, ToolContext } from './types';
+import { saveMemory, searchMemory, listMemory, deleteMemory } from './memory';
 
 // ── buildTool Factory ───────────────────────────────────────────────
 
@@ -314,13 +315,125 @@ const TOOL_REGISTRY: AgentTool[] = [
     },
   }),
 
+  // ━━━ Memory Tools (Phase 3) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  buildTool({
+    name: 'MemorySave',
+    description: 'Save a persistent memory entry (key-value pair) that persists across conversations. Use to remember user preferences, facts, or instructions.',
+    whenToUse: [
+      'User shares a preference (I prefer X, I like Y)',
+      'User provides personal information (My name is, I work at)',
+      'User gives an instruction to remember (Remember that, Always do X)',
+      'You discover an important fact during the conversation worth remembering',
+      'User says "remember this" or "save this"',
+    ],
+    whenNotToUse: [
+      'Temporary information only relevant to the current conversation',
+      'Information already saved as a memory (check MemorySearch first)',
+      'Trivial or very common knowledge',
+    ],
+    examples: [
+      { key: 'preference_coding_language', value: 'User prefers TypeScript for all projects', category: 'preference' },
+      { key: 'fact_team_size', value: 'User manages a team of 5 developers', category: 'fact' },
+    ],
+    isReadOnly: false,
+    isDestructive: false,
+    permissionMode: 'restricted',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'A short, descriptive key for the memory (e.g. preference_language, fact_name)' },
+        value: { type: 'string', description: 'The value to store for this memory' },
+        category: { type: 'string', enum: ['preference', 'context', 'fact', 'instruction'], description: 'Memory category', default: 'context' },
+      },
+      required: ['key', 'value'],
+    },
+  }),
+
+  buildTool({
+    name: 'MemorySearch',
+    description: 'Search through persistent memory entries by keyword or category. Use to recall previously saved information.',
+    whenToUse: [
+      'Need to recall a user preference or previously discussed information',
+      'User asks "do you remember" or "what did I say about"',
+      'Need context from a previous conversation',
+    ],
+    whenNotToUse: [
+      'The information is in the current conversation context',
+      'User is asking a new question unrelated to past conversations',
+    ],
+    examples: [
+      { query: 'coding preference' },
+      { query: 'project', category: 'fact' },
+    ],
+    isReadOnly: true,
+    isDestructive: false,
+    permissionMode: 'open',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search keyword to find in memory keys or values' },
+        category: { type: 'string', enum: ['preference', 'context', 'fact', 'instruction'], description: 'Filter by memory category' },
+        limit: { type: 'number', description: 'Max results to return (default 10)', default: 10 },
+      },
+    },
+  }),
+
+  buildTool({
+    name: 'MemoryList',
+    description: 'List all persistent memory entries for the current agent. Shows keys, categories, and values.',
+    whenToUse: [
+      'User asks "what do you remember about me" or "show my memories"',
+      'Need to review all stored memories at once',
+    ],
+    whenNotToUse: [
+      'Looking for a specific memory - use MemorySearch instead',
+      'Saving a new memory - use MemorySave instead',
+    ],
+    isReadOnly: true,
+    isDestructive: false,
+    permissionMode: 'open',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max memories to return (default 20)', default: 20 },
+      },
+    },
+  }),
+
+  buildTool({
+    name: 'MemoryDelete',
+    description: 'Delete a persistent memory entry by key.',
+    whenToUse: [
+      'User asks to forget or remove a specific memory',
+      'A memory entry is outdated or incorrect',
+    ],
+    whenNotToUse: [
+      'Need to update a memory - just save a new value with the same key using MemorySave',
+      'Need to search memories - use MemorySearch instead',
+    ],
+    examples: [
+      { key: 'preference_old_framework' },
+    ],
+    isReadOnly: false,
+    isDestructive: true,
+    permissionMode: 'restricted',
+    parameters: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'The memory key to delete' },
+      },
+      required: ['key'],
+    },
+  }),
+
+  // ━━━ Meta Tools (continued) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   buildTool({
     name: 'Brief',
     description: 'Generate a brief summary of system capabilities, available tools, and current agent state.',
     whenToUse: [
       'User asks "what can you do?" or "what tools do you have?"',
       'Need a quick overview at the start of a conversation',
-      'User wants to understand the system\'s capabilities',
+      'User wants to understand the system capabilities',
     ],
     isReadOnly: true,
     isDestructive: false,
@@ -454,6 +567,10 @@ async function executeHandler(
     case 'Skill': return handleSkill(args);
     case 'Config': return handleConfig(context);
     case 'Brief': return handleBrief(context);
+    case 'MemorySave': return handleMemorySave(args, context);
+    case 'MemorySearch': return handleMemorySearch(args, context);
+    case 'MemoryList': return handleMemoryList(args, context);
+    case 'MemoryDelete': return handleMemoryDelete(args, context);
     default:
       return { success: false, result: '', error: `No handler for tool "${name}".` };
   }
@@ -784,8 +901,96 @@ async function handleBrief(context?: ToolContext): Promise<ToolResult> {
   const toolList = getToolNames().map((name, i) => `${i + 1}. **${name}**`).join('\n');
   return {
     success: true,
-    result: `## OpenHarness Agent — System Brief\n\n**You are an AI agent** with access to ${getToolNames().length} tools for web search, task management, agent coordination, and knowledge skills.\n\n### Available Tools:\n${toolList}\n\n### How to Work:\n1. For complex tasks, create a **TaskPlan** first\n2. Use **WebSearch** to find real-time information\n3. Use **TaskCreate/TaskList/TaskUpdate** for persistent tracking\n4. Use **Skill** to load specialized knowledge\n5. Use **Agent** to discover other agents and **SendMessage** for collaboration\n\n### Current Session:\n- Agent: ${context?.agentId || 'default'}\n- Conversation: ${context?.conversationId || 'N/A'}`,
+    result: `## OpenHarness Agent — System Brief\n\n**You are an AI agent** with access to ${getToolNames().length} tools for web search, task management, agent coordination, knowledge skills, and persistent memory.\n\n### Available Tools:\n${toolList}\n\n### How to Work:\n1. For complex tasks, create a **TaskPlan** first\n2. Use **WebSearch** to find real-time information\n3. Use **TaskCreate/TaskList/TaskUpdate** for persistent tracking\n4. Use **Skill** to load specialized knowledge\n5. Use **Agent** to discover other agents and **SendMessage** for collaboration\n6. Use **MemorySave/MemorySearch/MemoryList** to remember user preferences and facts\n\n### Current Session:\n- Agent: ${context?.agentId || 'default'}\n- Conversation: ${context?.conversationId || 'N/A'}`,
   };
+}
+
+// ── Memory Handlers (Phase 3) ────────────────────────────────────────
+
+async function handleMemorySave(args: Record<string, unknown>, context?: ToolContext): Promise<ToolResult> {
+  const key = String(args.key ?? '').trim();
+  const value = String(args.value ?? '').trim();
+  const category = validateEnum(String(args.category ?? 'context'), ['preference', 'context', 'fact', 'instruction'], 'context');
+  const agentId = context?.agentId;
+
+  if (!key) return { success: false, result: '', error: 'A non-empty "key" is required for MemorySave.' };
+  if (!value) return { success: false, result: '', error: 'A non-empty "value" is required for MemorySave.' };
+  if (!agentId) return { success: false, result: '', error: 'MemorySave requires an active agent context.' };
+
+  const result = await saveMemory(agentId, key, value, category);
+  if (!result.success) return { success: false, result: '', error: result.error };
+
+  return {
+    success: true,
+    result: `Memory saved successfully.\n\n**Key:** ${key}\n**Value:** ${value}\n**Category:** ${category}\n\nThis memory will persist across conversations.`,
+  };
+}
+
+async function handleMemorySearch(args: Record<string, unknown>, context?: ToolContext): Promise<ToolResult> {
+  const agentId = context?.agentId;
+  if (!agentId) return { success: false, result: '', error: 'MemorySearch requires an active agent context.' };
+
+  const query = args.query ? String(args.query) : undefined;
+  const category = args.category ? validateEnum(String(args.category), ['preference', 'context', 'fact', 'instruction'], undefined) : undefined;
+  const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 50);
+
+  const result = await searchMemory(agentId, query, category, limit);
+  if (!result.success) return { success: false, result: '', error: result.error };
+
+  if (result.memories.length === 0) {
+    return { success: true, result: query ? `No memories found matching "${query}".` : 'No memories found for this agent.' };
+  }
+
+  const formatted = result.memories
+    .map((m, i) => `${i + 1}. **${m.key}** [${m.category}]\n   ${m.value}\n   Updated: ${m.updatedAt.toISOString().split('T')[0]}`)
+    .join('\n\n');
+
+  return {
+    success: true,
+    result: `Found ${result.memories.length} memory(ies):\n\n${formatted}`,
+  };
+}
+
+async function handleMemoryList(args: Record<string, unknown>, context?: ToolContext): Promise<ToolResult> {
+  const agentId = context?.agentId;
+  if (!agentId) return { success: false, result: '', error: 'MemoryList requires an active agent context.' };
+
+  const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 100);
+  const result = await listMemory(agentId, limit);
+  if (!result.success) return { success: false, result: '', error: result.error };
+
+  if (result.memories.length === 0) return { success: true, result: 'No memories stored yet. Use MemorySave to save your first memory.' };
+
+  const byCategory: Record<string, typeof result.memories> = {};
+  for (const m of result.memories) {
+    if (!byCategory[m.category]) byCategory[m.category] = [];
+    byCategory[m.category].push(m);
+  }
+
+  const formatted = Object.entries(byCategory)
+    .map(([cat, mems]) => {
+      const memLines = mems.map((m, i) => `${i + 1}. **${m.key}**: ${m.value}`).join('\n');
+      return `### ${cat.charAt(0).toUpperCase() + cat.slice(1)} (${mems.length})\n${memLines}`;
+    })
+    .join('\n\n');
+
+  return {
+    success: true,
+    result: `## Memory Store (${result.memories.length} entries)\n\n${formatted}`,
+  };
+}
+
+async function handleMemoryDelete(args: Record<string, unknown>, context?: ToolContext): Promise<ToolResult> {
+  const key = String(args.key ?? '').trim();
+  const agentId = context?.agentId;
+
+  if (!key) return { success: false, result: '', error: 'A non-empty "key" is required for MemoryDelete.' };
+  if (!agentId) return { success: false, result: '', error: 'MemoryDelete requires an active agent context.' };
+
+  const result = await deleteMemory(agentId, key);
+  if (!result.success) return { success: false, result: '', error: result.error };
+
+  return { success: true, result: `Memory "${key}" deleted successfully.` };
 }
 
 // ── Utility ──────────────────────────────────────────────────────────

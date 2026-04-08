@@ -1,18 +1,23 @@
 // =============================================================================
-// OpenHarness Agent — Agent Loop (Phase 1: AsyncGenerator + State + Circuit Breaker)
+// OpenHarness Agent — Agent Loop (Phase 1+2: AsyncGenerator + Permissions + Context)
 // =============================================================================
 // Core agent loop following Claude Code's architecture:
 // - while(true) + State object + continue
 // - AsyncGenerator for streaming SSE events
 // - Circuit breaker (3 consecutive failures → trip)
+// - Permission pipeline (4-stage short-circuit)
+// - Context management (progressive compression)
 // - Token budget tracking
 // =============================================================================
 
 import type { LLMMessage } from '@/lib/llm';
 import { chatStream, getModelInfo } from '@/lib/llm';
-import type { StreamEvent, LoopState, ToolCallRecord, TaskPlanEvent, TokenUsage, ToolContext } from './types';
-import { DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_CONSECUTIVE_FAILURES } from './types';
-import { executeTool } from './tools';
+import type { StreamEvent, LoopState, ToolCallRecord, TaskPlanEvent, TokenUsage, ToolContext, TokenBudget } from './types';
+import { DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_CONSECUTIVE_FAILURES, DEFAULT_TOKEN_BUDGET } from './types';
+import { executeTool, getToolByName } from './tools';
+import { runPermissionPipeline, formatPermissionDenial } from './permissions';
+import type { PermissionPipelineConfig } from './permissions';
+import { autoCompress, estimateMessagesTokens } from './context-manager';
 
 // ── Agent Loop Configuration ────────────────────────────────────────
 
@@ -27,6 +32,10 @@ export interface AgentLoopConfig {
   autonomous?: boolean;
   /** Tool context passed to tool handlers */
   toolContext?: ToolContext;
+  /** Permission pipeline configuration */
+  permissionConfig?: PermissionPipelineConfig;
+  /** Token budget for context management */
+  tokenBudget?: TokenBudget;
 }
 
 // ── Create Initial Loop State ───────────────────────────────────────
@@ -61,10 +70,11 @@ export function createLoopState(
  *   while (turnCount < maxIterations) {
  *     1. Check abort signal
  *     2. Check circuit breaker
- *     3. Stream LLM response, accumulate thinking/content/tool_calls
- *     4. No tool calls → break (conversation complete)
- *     5. Execute tools with circuit breaker tracking
- *     6. Push tool results into messages, continue loop
+ *     3. Context management: auto-compress if approaching token limit
+ *     4. Stream LLM response, accumulate thinking/content/tool_calls
+ *     5. No tool calls → break (conversation complete)
+ *     6. Execute tools with permission pipeline + circuit breaker tracking
+ *     7. Push tool results into messages, continue loop
  *   }
  */
 export async function* runAgentLoop(
@@ -73,6 +83,12 @@ export async function* runAgentLoop(
 ): AsyncGenerator<StreamEvent, void, undefined> {
   const modelInfo = getModelInfo(config.modelId);
   const toolDefs = (await import('./tools')).getToolDefinitions();
+  const budget = config.tokenBudget || DEFAULT_TOKEN_BUDGET;
+  const permConfig = config.permissionConfig || {
+    mode: 'default' as const,
+    agentId: config.toolContext?.agentId,
+    autonomous: !!config.autonomous,
+  };
 
   try {
     // ── Main Loop ────────────────────────────────────────────────
@@ -99,6 +115,28 @@ export async function* runAgentLoop(
         break;
       }
 
+      // Step 2.5: Context management — auto-compress if approaching token limit
+      if (state.turnCount > 1) {
+        const currentTokens = estimateMessagesTokens(state.messages);
+        const availableTokens = budget.maxInputTokens - budget.systemPromptTokens - budget.reservedTokens;
+        const ratio = currentTokens / availableTokens;
+
+        if (ratio >= 0.75) {
+          const result = await autoCompress(state.messages, config.modelId, budget);
+
+          if (result.strategy !== 'none') {
+            state.messages = result.messages;
+            yield {
+              type: 'context_compressed',
+              strategy: result.strategy,
+              originalTokens: result.originalTokens,
+              compressedTokens: result.compressedTokens,
+              savedRatio: result.compressionRatio,
+            };
+          }
+        }
+      }
+
       // Notify about loop iteration (except first)
       if (state.turnCount > 1) {
         yield {
@@ -115,7 +153,7 @@ export async function* runAgentLoop(
       // Step 4: No tool calls → conversation complete
       if (toolCalls.length === 0) break;
 
-      // Step 5: Execute tools
+      // Step 5: Execute tools with permission pipeline
       // First, add assistant message with tool_calls to the message history
       state.messages.push({
         role: 'assistant',
@@ -149,10 +187,40 @@ export async function* runAgentLoop(
           };
         }
 
-        yield { type: 'tool_executing', toolCallId: tc.id, name: tc.name };
-
         let parsedArgs: Record<string, unknown> = {};
         try { parsedArgs = JSON.parse(tc.arguments); } catch { /* keep empty */ }
+
+        // ── Permission Pipeline Check ──────────────────────────────
+        const tool = getToolByName(tc.name);
+        if (tool) {
+          const permResult = await runPermissionPipeline(tool, parsedArgs, permConfig);
+
+          if (!permResult.allowed) {
+            // Permission denied — inject denial into message history
+            const denialMsg = formatPermissionDenial(permResult);
+            state.messages.push({
+              role: 'tool',
+              content: denialMsg,
+              tool_call_id: tc.id,
+            });
+
+            yield {
+              type: 'tool_result',
+              toolCallId: tc.id,
+              name: tc.name,
+              result: denialMsg,
+              success: false,
+              duration: Date.now() - startTime,
+              iteration: state.turnCount,
+            };
+
+            state.consecutiveFailures++;
+            continue; // Skip execution, move to next tool call
+          }
+        }
+
+        // ── Execute Tool ───────────────────────────────────────────
+        yield { type: 'tool_executing', toolCallId: tc.id, name: tc.name };
 
         const result = await executeTool(tc.name, parsedArgs, config.toolContext);
         const duration = Date.now() - startTime;

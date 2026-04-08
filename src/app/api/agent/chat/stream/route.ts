@@ -3,6 +3,7 @@ import { db, ensureDatabase } from '@/lib/db';
 import { getModelInfo, type LLMMessage } from '@/lib/llm';
 import { runAgentLoop, createLoopState, type AgentLoopConfig } from '@/lib/agent/agent-loop';
 import type { ToolContext } from '@/lib/agent/tools';
+import { buildMemorySectionLightweight } from '@/lib/agent/memory';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,11 +56,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Build System Prompt ──────────────────────────────────────
-    const skillSection = await buildSkillSection(skillIds, agentData?.boundSkills);
+    // ── Build System Prompt (Phase 3: Memory + Lightweight Skills) ─────
+    const memorySection = await buildMemorySectionLightweight(dbAgentId || '');
+    const skillSection = await buildSkillSectionLightweight(skillIds, agentData?.boundSkills);
     const personaSection = buildPersonaSection(agentData);
     const methodologySection = buildMethodologySection(!!autonomous);
-    const finalSystemPrompt = systemPrompt + personaSection + skillSection + methodologySection;
+    const finalSystemPrompt = systemPrompt + personaSection + memorySection + skillSection + methodologySection;
 
     const modelInfo = getModelInfo(effectiveModelId);
 
@@ -224,7 +226,11 @@ function buildPersonaSection(agentData: { agentMd?: string; soulPrompt?: string 
   return section;
 }
 
-async function buildSkillSection(skillIds?: string[], boundSkillsStr?: string): Promise<string> {
+/**
+ * buildSkillSectionLightweight — Phase 3: Only inject skill index (name + description),
+ * not full content. Saves tokens. Agent uses Skill tool to load content on demand.
+ */
+async function buildSkillSectionLightweight(skillIds?: string[], boundSkillsStr?: string): Promise<string> {
   const skillIdsToFetch: string[] = [];
 
   if (Array.isArray(skillIds) && skillIds.length > 0) {
@@ -246,17 +252,19 @@ async function buildSkillSection(skillIds?: string[], boundSkillsStr?: string): 
 
   const skills = await db.skill.findMany({
     where: { id: { in: skillIdsToFetch } },
+    select: { name: true, description: true, category: true, id: true, isLoaded: true },
   });
 
   if (skills.length === 0) return '';
 
-  const skillLines = skills.map(s => {
-    const cat = s.category || 'general';
-    const desc = s.description || '';
-    return `- **${s.name}** (${cat}): ${desc}\n  ${s.content ? s.content.slice(0, 500) : ''}`;
-  }).join('\n\n');
+  // Lightweight index: name + description only, no content
+  const skillIndex = skills.map(s => {
+    const status = s.isLoaded ? 'Active' : 'Available';
+    const desc = s.description || 'No description';
+    return `- **${s.name}** [${s.id}] (${s.category}, ${status}): ${desc}`;
+  }).join('\n');
 
-  return `\n\n## Loaded Skills\n${skillLines}\n\nUse these skills when relevant to the user's request.`;
+  return `\n\n## Available Skills (${skills.length})\n${skillIndex}\n\nUse the Skill tool with action "load" and the skill ID to load full content on demand.`;
 }
 
 function buildMethodologySection(isAutonomous: boolean): string {
@@ -279,8 +287,9 @@ function buildMethodologySection(isAutonomous: boolean): string {
 - **WebFetch** → When you need to read a specific URL's content
 - **TaskPlan** → When the task has 3+ steps (ALWAYS plan first!)
 - **TaskCreate/TaskUpdate** → For persistent task tracking
-- **Skill** → To load specialized knowledge modules
-- **Agent/SendMessage** → For multi-agent collaboration`;
+- **Skill** → To load specialized knowledge modules on demand
+- **Agent/SendMessage** → For multi-agent collaboration
+- **MemorySave/MemorySearch/MemoryList** → To remember and recall information across conversations`
 
   if (isAutonomous) {
     return base + `

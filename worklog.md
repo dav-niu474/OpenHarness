@@ -1358,4 +1358,83 @@ Successfully implemented all Phase 1 components of the new agent architecture. A
 **Backward Compatibility:**
 - SSE event format unchanged — frontend PlaygroundPage requires zero changes
 - ThinkingBlock auto-expand/collapse logic verified correct
+
+---
+
+## Task ID: phase2-phase3 - Main Agent
+### Work Task
+Implement Phase 2 (Permission Pipeline + Context Management) and Phase 3 (Memory System + Skill Optimization) of the OpenHarness Agent architecture.
+
+### Work Summary
+Successfully implemented Phase 2 and Phase 3 of the 6-phase architecture roadmap. All changes compile cleanly with zero lint errors, and the dev server confirms compilation and API routes return 200 OK.
+
+**Phase 2: Permission Pipeline + Context Management**
+
+1. **Permission Pipeline** (`src/lib/agent/permissions.ts`) — NEW
+   - Four-stage short-circuit pipeline: validateInput → checkPermissions → runHooks → canUseTool
+   - Permission modes: default (ask), auto (allow all), plan (block writes), autonomous (block destructive)
+   - Stage 1: Schema validation via tool.validateInput()
+   - Stage 2: Permission mode check based on tool.isReadOnly, isDestructive, permissionMode
+   - Stage 3: Pre-tool-use hooks — checks DB PermissionRule deny list
+   - Stage 4: Final safety net — tool name validation
+   - formatPermissionDenial() for LLM-readable denial messages
+
+2. **Context Manager** (`src/lib/agent/context-manager.ts`) — NEW
+   - Token estimation: estimateTokens() using ~4 chars/token for English, ~1.5 chars/token for CJK
+   - estimateMessagesTokens() for full message arrays
+   - Snip strategy (75% threshold): keep system + first user msg + recent 15 messages
+   - Summary strategy (90% threshold): LLM generates summary of old messages, keeps recent 10 in full
+   - autoCompress() — unified entry point that auto-selects the right strategy
+   - Fallback summary when LLM summarization fails
+
+3. **Types Update** (`src/lib/agent/types.ts`)
+   - New StreamEvent: `context_compressed` (strategy, originalTokens, compressedTokens, savedRatio)
+   - New interfaces: PermissionPipelineConfig, PermissionResult
+
+4. **Agent Loop Integration** (`src/lib/agent/agent-loop.ts`) — REWRITTEN
+   - Permission pipeline check before every tool execution
+   - Permission denial → inject denial message into tool result, skip execution
+   - Context auto-compression at the start of each loop iteration (turn > 1)
+   - New config options: permissionConfig, tokenBudget
+   - Permission denial tracked in circuit breaker (consecutiveFailures++)
+
+**Phase 3: Memory System + Skill Optimization**
+
+5. **Memory System** (`src/lib/agent/memory.ts`) — NEW
+   - buildMemorySectionLightweight() — injects memory index (keys + categories only) into system prompt
+   - buildMemorySection() — full memory injection (for future use)
+   - saveMemory() — upsert with unique (agentId, key) constraint
+   - searchMemory() — keyword search on key + value fields, optional category filter
+   - listMemory() — list all memories for an agent
+   - deleteMemory() — delete by agentId + key
+   - extractAndSaveMemories() — heuristic auto-extraction of user preferences/facts/instructions
+   - Category icons: 👤 preference, 📋 context, 📌 fact, ⚙️ instruction
+
+6. **Memory Tools** (`src/lib/agent/tools.ts`) — UPDATED
+   - MemorySave: Save key-value memory with category (preference/context/fact/instruction)
+   - MemorySearch: Search memories by keyword and/or category
+   - MemoryList: List all memories grouped by category
+   - MemoryDelete: Delete a memory by key
+   - All 4 tools have full whenToUse/whenNotToUse guidance for LLM
+   - Total tool count: 11 → 15 (4 new memory tools)
+   - Brief tool updated to mention memory capabilities
+
+7. **Skill System Optimization** (`src/app/api/agent/chat/stream/route.ts`) — UPDATED
+   - Replaced buildSkillSection with buildSkillSectionLightweight
+   - Skills now only inject name + description + ID + status (not full content)
+   - Saves significant tokens in system prompt
+   - Agent uses Skill tool with action "load" to get full content on demand
+   - Memory section injected into system prompt (lightweight index)
+
+**Files created:**
+- `src/lib/agent/permissions.ts` (new)
+- `src/lib/agent/context-manager.ts` (new)
+- `src/lib/agent/memory.ts` (new)
+
+**Files modified:**
+- `src/lib/agent/types.ts` (added context_compressed event, permission types)
+- `src/lib/agent/agent-loop.ts` (integrated permissions + context management)
+- `src/lib/agent/tools.ts` (added 4 memory tools, updated Brief)
+- `src/app/api/agent/chat/stream/route.ts` (memory injection + skill optimization)
+- `agent-ctx/agent-architecture-design.md` (marked Phase 2 & 3 as completed)
 - All existing API routes continue to work

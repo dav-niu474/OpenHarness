@@ -575,16 +575,26 @@ ${scratchpadContext}
 - [x] 思考过程显示修复 → 已验证ThinkingBlock自动展开/折叠逻辑正确
 - [x] 协作路由导入更新 → collaborative/route.ts 使用新的 @/lib/agent/tools 路径
 
-### Phase 2: 权限管线 + 上下文管理（Week 3）
-- [ ] 四阶段权限检查
-- [ ] Snip压缩策略（70%阈值）
-- [ ] Summary压缩策略（90%阈值）
-- [ ] Token计数器
+### Phase 2: 权限管线 + 上下文管理 ✅ COMPLETED
+- [x] 四阶段权限检查 → `src/lib/agent/permissions.ts` (validateInput → checkPermissions → runHooks → canUseTool)
+- [x] Snip压缩策略（75%阈值）→ `src/lib/agent/context-manager.ts` (snipCompress: keep system + first user + recent N)
+- [x] Summary压缩策略（90%阈值）→ summaryCompress (LLM generates summary of old messages)
+- [x] Token计数器 → estimateTokens, estimateMessagesTokens, getAvailableTokenBudget
+- [x] 自动压缩入口 → autoCompress (unified: choose strategy based on ratio)
+- [x] Agent Loop集成 → agent-loop.ts: permission pipeline check before tool execution, context compression each iteration
+- [x] 新SSE事件类型 → context_compressed (strategy, originalTokens, compressedTokens, savedRatio)
+- [x] 权限模式支持 → default/auto/plan 三种模式 + autonomous模式特殊处理
+- [x] DB权限规则检查 → Stage 3: runHooks checks PermissionRule deny list
 
-### Phase 3: 记忆系统 + Skill系统（Week 4）
-- [ ] 记忆注入到System Prompt
-- [ ] Skill轻量化（只放索引）
-- [ ] 按需加载Skill
+### Phase 3: 记忆系统 + Skill系统 ✅ COMPLETED
+- [x] 记忆注入到System Prompt → `src/lib/agent/memory.ts` (buildMemorySectionLightweight: 仅注入key/category摘要)
+- [x] 记忆操作API → saveMemory, searchMemory, listMemory, deleteMemory (upsert, keyword search)
+- [x] 自动记忆提取 → extractAndSaveMemories (heuristic: preference/fact/instruction patterns)
+- [x] Memory工具注册 → tools.ts: MemorySave, MemorySearch, MemoryList, MemoryDelete (4个新工具)
+- [x] Skill轻量化（只放索引）→ buildSkillSectionLightweight: 仅name+description, 不注入content
+- [x] 按需加载Skill → Skill tool with action "load" 按需获取完整content
+- [x] Stream Route集成 → memory section + lightweight skill index 注入到 system prompt
+- [x] 工具总数 → 从11个增加到15个（新增4个Memory工具）
 
 ### Phase 4: Plan模式（Week 5）
 - [ ] Plan模式System Prompt
