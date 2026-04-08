@@ -57,6 +57,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui/tabs';
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -150,8 +156,8 @@ const DEFAULT_FORM: AgentFormData = {
   description: '',
   type: 'react',
   systemPrompt: '',
-  provider: 'openai',
-  model: 'gpt-4',
+  provider: 'nvidia',
+  model: 'z-ai/glm4.7',
   status: 'active',
   temperature: 0.7,
   maxTokens: 4096,
@@ -515,7 +521,7 @@ function AgentFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle>{mode === 'create' ? 'Create New Agent' : 'Edit Agent'}</DialogTitle>
           <DialogDescription>
@@ -524,264 +530,295 @@ function AgentFormDialog({
               : 'Update the agent configuration and behavior settings.'}
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Row: Name + Description */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="agent-name">
-                Name <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                id="agent-name"
-                placeholder="e.g., Alpha - Code Assistant"
-                value={form.name}
-                onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="agent-desc">Description</Label>
-              <Input
-                id="agent-desc"
-                placeholder="Brief description of the agent"
-                value={form.description}
-                onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
-              />
-            </div>
-          </div>
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+          <Tabs defaultValue="basic" className="flex flex-col flex-1 min-h-0">
+            <TabsList className="grid w-full grid-cols-3 shrink-0">
+              <TabsTrigger value="basic" className="text-xs">
+                <Settings className="w-3.5 h-3.5 mr-1.5" />
+                Basic Info
+              </TabsTrigger>
+              <TabsTrigger value="skills" className="text-xs">
+                <BookOpen className="w-3.5 h-3.5 mr-1.5" />
+                Skills
+                {form.boundSkills.length > 0 && (
+                  <Badge className="ml-1.5 text-[9px] h-4 min-w-4 px-1 bg-emerald-500/10 text-emerald-600 border-emerald-500/20">
+                    {form.boundSkills.length}
+                  </Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="profile" className="text-xs">
+                <FileText className="w-3.5 h-3.5 mr-1.5" />
+                Profile
+              </TabsTrigger>
+            </TabsList>
 
-          {/* Row: Type + Status */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Type</Label>
-              <Select
-                value={form.type}
-                onValueChange={(val) => setForm((prev) => ({ ...prev, type: val }))}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="react">React</SelectItem>
-                  <SelectItem value="planning">Planning</SelectItem>
-                  <SelectItem value="coding">Coding</SelectItem>
-                  <SelectItem value="custom">Custom</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Status</Label>
-              <Select
-                value={form.status}
-                onValueChange={(val) => setForm((prev) => ({ ...prev, status: val }))}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
-                  <SelectItem value="archived">Archived</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+            {/* ── Tab: Basic Info ─────────────────────────────── */}
+            <TabsContent value="basic" className="flex-1 overflow-y-auto mt-4 space-y-5 pr-1 custom-scrollbar">
+              {/* Row: Name + Description */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="agent-name">
+                    Name <span className="text-red-500">*</span>
+                  </Label>
+                  <Input
+                    id="agent-name"
+                    placeholder="e.g., Alpha - Code Assistant"
+                    value={form.name}
+                    onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="agent-desc">Description</Label>
+                  <Input
+                    id="agent-desc"
+                    placeholder="Brief description of the agent"
+                    value={form.description}
+                    onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+                  />
+                </div>
+              </div>
 
-          {/* Row: Provider + Model */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Provider</Label>
-              <Select
-                value={form.provider}
-                onValueChange={(val) => {
-                  setForm((prev) => ({ ...prev, provider: val }));
-                  // Auto-set model when provider changes
-                  if (val === 'nvidia') setForm((prev) => ({ ...prev, model: 'glm-4.7' }));
-                  else if (val === 'openai') setForm((prev) => ({ ...prev, model: 'gpt-4' }));
-                  else if (val === 'anthropic') setForm((prev) => ({ ...prev, model: 'claude-3' }));
-                  else setForm((prev) => ({ ...prev, model: 'local-model' }));
-                }}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="nvidia">
-                    <span className="flex items-center gap-2">
-                      NVIDIA NIM
-                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-amber-50 text-amber-600 border-amber-200">推荐</Badge>
-                    </span>
-                  </SelectItem>
-                  <SelectItem value="openai">OpenAI</SelectItem>
-                  <SelectItem value="anthropic">Anthropic</SelectItem>
-                  <SelectItem value="local">Local</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="agent-model">Model</Label>
-              {form.provider === 'nvidia' ? (
-                <Select
-                  value={form.model}
-                  onValueChange={(val) => setForm((prev) => ({ ...prev, model: val }))}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="glm-4.7">
-                      <span className="flex items-center gap-2">GLM 4.7 <span className="text-muted-foreground text-xs">— 中文理解 + 代码</span></span>
-                    </SelectItem>
-                    <SelectItem value="glm-5">
-                      <span className="flex items-center gap-2">GLM 5 <span className="text-muted-foreground text-xs">— 最新推理</span></span>
-                    </SelectItem>
-                    <SelectItem value="kimi-2.5">
-                      <span className="flex items-center gap-2">Kimi 2.5 <span className="text-muted-foreground text-xs">— 长上下文</span></span>
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  id="agent-model"
-                  placeholder={form.provider === 'openai' ? 'gpt-4' : form.provider === 'anthropic' ? 'claude-3' : 'model-name'}
-                  value={form.model}
-                  onChange={(e) => setForm((prev) => ({ ...prev, model: e.target.value }))}
+              {/* Row: Type + Status */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Type</Label>
+                  <Select
+                    value={form.type}
+                    onValueChange={(val) => setForm((prev) => ({ ...prev, type: val }))}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="react">React</SelectItem>
+                      <SelectItem value="planning">Planning</SelectItem>
+                      <SelectItem value="coding">Coding</SelectItem>
+                      <SelectItem value="custom">Custom</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Status</Label>
+                  <Select
+                    value={form.status}
+                    onValueChange={(val) => setForm((prev) => ({ ...prev, status: val }))}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="active">Active</SelectItem>
+                      <SelectItem value="inactive">Inactive</SelectItem>
+                      <SelectItem value="archived">Archived</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {/* Row: Provider + Model */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Provider</Label>
+                  <Select
+                    value={form.provider}
+                    onValueChange={(val) => {
+                      setForm((prev) => ({ ...prev, provider: val }));
+                      if (val === 'nvidia') {
+                        setForm((prev) => ({ ...prev, model: 'z-ai/glm4.7' }));
+                      } else if (val === 'openai') {
+                        setForm((prev) => ({ ...prev, model: 'z-ai/glm4.7' }));
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="nvidia">
+                        <span className="flex items-center gap-2">
+                          NVIDIA NIM
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 bg-emerald-50 text-emerald-600 border-emerald-200">Recommended</Badge>
+                        </span>
+                      </SelectItem>
+                      <SelectItem value="openai">OpenAI</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Model</Label>
+                  <Select
+                    value={form.model}
+                    onValueChange={(val) => setForm((prev) => ({ ...prev, model: val }))}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="z-ai/glm4.7">
+                        <span className="flex items-center gap-2">GLM 4.7 <span className="text-muted-foreground text-xs">— z-ai</span></span>
+                      </SelectItem>
+                      <SelectItem value="z-ai/glm5">
+                        <span className="flex items-center gap-2">GLM 5 <span className="text-muted-foreground text-xs">— z-ai</span></span>
+                      </SelectItem>
+                      <SelectItem value="moonshotai/kimi-k2.5">
+                        <span className="flex items-center gap-2">Kimi K2.5 <span className="text-muted-foreground text-xs">— moonshotai</span></span>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {/* System Prompt */}
+              <div className="space-y-2">
+                <Label htmlFor="agent-prompt">
+                  System Prompt <span className="text-red-500">*</span>
+                </Label>
+                <Textarea
+                  id="agent-prompt"
+                  placeholder="You are a helpful assistant..."
+                  value={form.systemPrompt}
+                  onChange={(e) => setForm((prev) => ({ ...prev, systemPrompt: e.target.value }))}
+                  rows={5}
+                  className="min-h-[120px]"
                 />
+              </div>
+
+              <Separator />
+
+              {/* Temperature Slider */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="flex items-center gap-2">
+                    <Thermometer className="w-4 h-4 text-muted-foreground" />
+                    Temperature
+                  </Label>
+                  <span className="text-sm font-mono font-medium text-emerald-600">
+                    {form.temperature.toFixed(1)}
+                  </span>
+                </div>
+                <Slider
+                  value={[form.temperature]}
+                  onValueChange={(val) => setForm((prev) => ({ ...prev, temperature: val[0] }))}
+                  min={0}
+                  max={1}
+                  step={0.1}
+                />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>Precise (0)</span>
+                  <span>Creative (1)</span>
+                </div>
+              </div>
+
+              {/* Max Tokens */}
+              <div className="space-y-2">
+                <Label htmlFor="agent-tokens">Max Tokens</Label>
+                <Input
+                  id="agent-tokens"
+                  type="number"
+                  min={256}
+                  max={128000}
+                  step={256}
+                  value={form.maxTokens}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      maxTokens: parseInt(e.target.value) || 4096,
+                    }))
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  Maximum number of tokens the agent can generate per response.
+                </p>
+              </div>
+            </TabsContent>
+
+            {/* ── Tab: Skills ────────────────────────────────── */}
+            <TabsContent value="skills" className="flex-1 overflow-y-auto mt-4 space-y-4 pr-1 custom-scrollbar">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold">Skill Binding</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Select skills to bind to this agent. Bound skills are automatically injected into every conversation.
+                  </p>
+                </div>
+                {form.boundSkills.length > 0 && (
+                  <Badge variant="outline" className="text-xs bg-violet-500/10 text-violet-600 border-violet-500/20">
+                    {form.boundSkills.length} bound
+                  </Badge>
+                )}
+              </div>
+              <SkillSelector
+                selectedIds={form.boundSkills}
+                onToggle={(id) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    boundSkills: prev.boundSkills.includes(id)
+                      ? prev.boundSkills.filter((s) => s !== id)
+                      : [...prev.boundSkills, id],
+                  }))
+                }
+              />
+              {form.boundSkills.length > 0 && (
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-muted/50 border">
+                  <Sparkles className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+                  <p className="text-xs text-muted-foreground">
+                    The following skills will be available to this agent:{' '}
+                    <span className="font-medium text-foreground">{form.boundSkills.length} skill{form.boundSkills.length !== 1 ? 's' : ''}</span>{' '}
+                    bound. Skills provide specialized capabilities and knowledge modules.
+                  </p>
+                </div>
               )}
-            </div>
-          </div>
+            </TabsContent>
 
-          {/* System Prompt */}
-          <div className="space-y-2">
-            <Label htmlFor="agent-prompt">
-              System Prompt <span className="text-red-500">*</span>
-            </Label>
-            <Textarea
-              id="agent-prompt"
-              placeholder="You are a helpful assistant..."
-              value={form.systemPrompt}
-              onChange={(e) => setForm((prev) => ({ ...prev, systemPrompt: e.target.value }))}
-              rows={4}
-              className="min-h-[100px]"
-            />
-          </div>
+            {/* ── Tab: Profile ───────────────────────────────── */}
+            <TabsContent value="profile" className="flex-1 overflow-y-auto mt-4 space-y-5 pr-1 custom-scrollbar">
+              {/* Agent Profile (agent.md) */}
+              <div className="space-y-2">
+                <Label htmlFor="agent-md" className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-amber-500" />
+                  Agent Profile (agent.md)
+                </Label>
+                <Textarea
+                  id="agent-md"
+                  placeholder="Define the agent's capabilities, expertise, and guidelines..."
+                  value={form.agentMd}
+                  onChange={(e) => setForm((prev) => ({ ...prev, agentMd: e.target.value }))}
+                  rows={6}
+                  className="min-h-[140px]"
+                />
+                <p className="text-xs text-muted-foreground">
+                  This content will be injected into the system prompt when the agent is used.
+                  Define the agent's capabilities, expertise areas, constraints, and behavioral guidelines.
+                </p>
+              </div>
 
-          {/* Separator for extended fields */}
-          <Separator />
+              <Separator />
 
-          {/* Soul Prompt */}
-          <div className="space-y-2">
-            <Label htmlFor="agent-soul" className="flex items-center gap-2">
-              <Heart className="w-4 h-4 text-rose-400" />
-              Soul Prompt
-            </Label>
-            <Textarea
-              id="agent-soul"
-              placeholder="Define the agent's core personality, values, beliefs, and inner voice..."
-              value={form.soulPrompt}
-              onChange={(e) => setForm((prev) => ({ ...prev, soulPrompt: e.target.value }))}
-              rows={3}
-              className="min-h-[80px]"
-            />
-            <p className="text-xs text-muted-foreground">
-              The soul prompt defines the agent's core personality and character (soul.md).
-            </p>
-          </div>
-
-          {/* Agent.md */}
-          <div className="space-y-2">
-            <Label htmlFor="agent-md" className="flex items-center gap-2">
-              <FileText className="w-4 h-4 text-amber-500" />
-              Agent.md
-            </Label>
-            <Textarea
-              id="agent-md"
-              placeholder="Agent instructions, capabilities, constraints, and behavioral guidelines..."
-              value={form.agentMd}
-              onChange={(e) => setForm((prev) => ({ ...prev, agentMd: e.target.value }))}
-              rows={3}
-              className="min-h-[80px]"
-            />
-            <p className="text-xs text-muted-foreground">
-              Detailed instructions and context injected into the agent's system prompt (agent.md).
-            </p>
-          </div>
-
-          {/* Bound Skills */}
-          <div className="space-y-2">
-            <Label className="flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-violet-500" />
-              Bound Skills
-              <span className="text-xs text-muted-foreground font-normal">
-                ({form.boundSkills.length} selected)
-              </span>
-            </Label>
-            <SkillSelector
-              selectedIds={form.boundSkills}
-              onToggle={(id) =>
-                setForm((prev) => ({
-                  ...prev,
-                  boundSkills: prev.boundSkills.includes(id)
-                    ? prev.boundSkills.filter((s) => s !== id)
-                    : [...prev.boundSkills, id],
-                }))
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              Skills bound to this agent will be automatically injected into every conversation.
-            </p>
-          </div>
-
-          <Separator />
-
-          {/* Temperature Slider */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label className="flex items-center gap-2">
-                <Thermometer className="w-4 h-4 text-muted-foreground" />
-                Temperature
-              </Label>
-              <span className="text-sm font-mono font-medium text-emerald-600">
-                {form.temperature.toFixed(1)}
-              </span>
-            </div>
-            <Slider
-              value={[form.temperature]}
-              onValueChange={(val) => setForm((prev) => ({ ...prev, temperature: val[0] }))}
-              min={0}
-              max={1}
-              step={0.1}
-            />
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>Precise (0)</span>
-              <span>Creative (1)</span>
-            </div>
-          </div>
-
-          {/* Max Tokens */}
-          <div className="space-y-2">
-            <Label htmlFor="agent-tokens">Max Tokens</Label>
-            <Input
-              id="agent-tokens"
-              type="number"
-              min={256}
-              max={128000}
-              step={256}
-              value={form.maxTokens}
-              onChange={(e) =>
-                setForm((prev) => ({
-                  ...prev,
-                  maxTokens: parseInt(e.target.value) || 4096,
-                }))
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              Maximum number of tokens the agent can generate per response.
-            </p>
-          </div>
+              {/* Soul/Personality (soul.md) */}
+              <div className="space-y-2">
+                <Label htmlFor="agent-soul" className="flex items-center gap-2">
+                  <Heart className="w-4 h-4 text-rose-400" />
+                  Soul / Personality (soul.md)
+                </Label>
+                <Textarea
+                  id="agent-soul"
+                  placeholder="Define the agent's personality, tone, and behavioral traits..."
+                  value={form.soulPrompt}
+                  onChange={(e) => setForm((prev) => ({ ...prev, soulPrompt: e.target.value }))}
+                  rows={6}
+                  className="min-h-[140px]"
+                />
+                <p className="text-xs text-muted-foreground">
+                  This content shapes the agent's character and communication style.
+                  Define personality traits, tone preferences, values, and behavioral patterns.
+                </p>
+              </div>
+            </TabsContent>
+          </Tabs>
 
           {/* Submit */}
-          <DialogFooter className="pt-2">
+          <DialogFooter className="pt-4 border-t mt-4 shrink-0">
             <Button
               type="button"
               variant="outline"

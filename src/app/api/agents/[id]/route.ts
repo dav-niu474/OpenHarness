@@ -51,7 +51,7 @@ export async function PUT(
     await ensureDatabase();
     const { id } = await params;
     const body = await req.json();
-    const { name, description, type, systemPrompt, provider, model, status, config } = body;
+    const { name, description, type, systemPrompt, provider, model, status, config, soulPrompt, agentMd, boundSkills } = body;
 
     // Verify agent exists
     const existing = await db.agent.findUnique({ where: { id } });
@@ -72,7 +72,10 @@ export async function PUT(
         ...(provider !== undefined && { provider }),
         ...(model !== undefined && { model }),
         ...(status !== undefined && { status }),
-        ...(config !== undefined && { config: JSON.stringify(config) }),
+        ...(config !== undefined && { config: typeof config === 'string' ? config : JSON.stringify(config) }),
+        ...(soulPrompt !== undefined && { soulPrompt: soulPrompt || '' }),
+        ...(agentMd !== undefined && { agentMd: agentMd || '' }),
+        ...(boundSkills !== undefined && { boundSkills: typeof boundSkills === 'string' ? boundSkills : JSON.stringify(boundSkills) }),
       },
     });
 

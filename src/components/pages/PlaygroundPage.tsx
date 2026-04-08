@@ -241,27 +241,22 @@ function ThinkingBlock({ thinking, isStreaming }: { thinking: string; isStreamin
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <div className="rounded-lg border border-border bg-muted/50 dark:bg-zinc-800/50 mb-2 overflow-hidden">
-        <CollapsibleTrigger className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/80 dark:hover:bg-zinc-800 transition-colors text-left">
-          <Brain className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-          <span className="text-xs font-medium text-muted-foreground flex-1">
-            {isStreaming ? 'Thinking...' : 'Thought Process'}
+      <div className="mb-2 overflow-hidden">
+        <CollapsibleTrigger className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-muted/50 dark:hover:bg-white/[0.03] transition-colors rounded">
+          <Brain className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+          <span className="text-[11px] text-muted-foreground/70 flex-1">
+            {isStreaming ? 'Thinking…' : 'Thoughts'}
           </span>
-          <span className="text-[10px] text-muted-foreground/60 font-mono tabular-nums">
-            {thinking.length} chars
-          </span>
-          <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground/60 transition-transform duration-200 ${isOpen ? 'rotate-0' : '-rotate-90'}`} />
+          <ChevronDown className={`w-3 h-3 text-muted-foreground/40 transition-transform duration-150 ${isOpen ? 'rotate-0' : '-rotate-90'}`} />
         </CollapsibleTrigger>
 
         <CollapsibleContent>
-          <div className="px-3 pb-3 pt-0">
-            <div className="border-t border-border/50 pt-2">
-              <div className="text-sm text-muted-foreground/80 leading-relaxed whitespace-pre-wrap font-mono">
-                {thinking}
-                {isStreaming && (
-                  <span className="inline-block w-[2px] h-4 bg-current ml-0.5 align-text-bottom animate-pulse" />
-                )}
-              </div>
+          <div className="max-h-64 overflow-y-auto">
+            <div className="px-3 pb-3 pt-2 font-mono text-xs leading-relaxed text-muted-foreground/70 whitespace-pre-wrap">
+              {thinking}
+              {isStreaming && (
+                <span className="inline-block w-1.5 h-3.5 bg-muted-foreground/50 ml-0.5 align-text-bottom animate-pulse" />
+              )}
             </div>
           </div>
         </CollapsibleContent>

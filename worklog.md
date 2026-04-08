@@ -803,3 +803,44 @@ d) **Frontend** (`/src/components/pages/DashboardPage.tsx`):
 - `src/app/api/agents/route.ts` (Issue 3)
 - `prisma/schema.prisma` (Issue 3)
 - `src/components/pages/DashboardPage.tsx` (Issue 3)
+
+---
+
+## Task ID: 6 - Create Agent Dialog (Tabbed Form Refactor)
+### Work Task
+Add a Create Agent dialog to the DashboardPage with tabbed form organization (Basic Info, Skills, Profile), skill binding, agent.md/soul.md content fields, and updated provider/model options.
+
+### Work Summary
+Successfully refactored the existing `AgentFormDialog` component in the DashboardPage to use a tabbed layout with shadcn/ui Tabs. All changes compile cleanly with zero lint errors and the dev server confirms the page renders correctly.
+
+**1. Tabbed Form Layout**
+- Imported `Tabs`, `TabsContent`, `TabsList`, `TabsTrigger` from `@/components/ui/tabs`
+- Reorganized the flat form into 3 organized tabs:
+  - **Basic Info**: Name (required), Description, Type (react/planning/coding/custom), Status (active/inactive/archived), Provider, Model, System Prompt (required), Temperature slider, Max Tokens
+  - **Skills**: Skill Binding section with multi-select checkbox list fetched from `GET /api/skills`, bound skill count badge on tab trigger, informational callout when skills are selected
+  - **Profile**: Agent Profile (agent.md) textarea with placeholder "Define the agent's capabilities, expertise, and guidelines...", Soul/Personality (soul.md) textarea with placeholder "Define the agent's personality, tone, and behavioral traits..."
+
+**2. Provider & Model Updates**
+- Restricted provider options to `nvidia` and `openai` only (removed anthropic and local)
+- Updated default provider to `nvidia` and default model to `z-ai/glm4.7`
+- Model select now always uses a dropdown (previously was an input for non-nvidia providers) with 3 options:
+  - `z-ai/glm4.7` (GLM 4.7 — z-ai)
+  - `z-ai/glm5` (GLM 5 — z-ai)
+  - `moonshotai/kimi-k2.5` (Kimi K2.5 — moonshotai)
+
+**3. Dialog Layout Improvements**
+- Changed `DialogContent` to use `flex flex-col` with `overflow-hidden` for proper height management
+- Each tab content area has `flex-1 overflow-y-auto` for independent scrolling
+- Dialog footer has `border-t` separator and `shrink-0` to stay pinned at bottom
+- Skills tab trigger shows an emerald badge with the count of bound skills when > 0
+
+**4. Existing Functionality Preserved**
+- Create mode dialog wired to "Create Agent" quick action button and agent list "Create Agent" button
+- Edit mode dialog wired to agent card click and edit button
+- Delete agent dialog unchanged
+- POST to `/api/agents` with all fields including `soulPrompt`, `agentMd`, `boundSkills` (array serialized to JSON string by API)
+- Toast notifications on success/error
+- Agent list refreshes after create/edit/delete operations
+
+**Files modified:**
+- `src/components/pages/DashboardPage.tsx` (refactored AgentFormDialog with Tabs)

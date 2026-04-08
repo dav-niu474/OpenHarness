@@ -36,36 +36,50 @@ export async function ensureDatabase(): Promise<void> {
   initPromise = (async () => {
     if (process.env.VERCEL) {
       try {
-        // On Vercel, we need to push schema on first API call
-        // because SQLite doesn't persist between deployments
-        // Use Prisma's internal _executeRaw to check if tables exist
+        // On Vercel, check if Agent table exists and has the correct schema
         const result = await db.$queryRawUnsafe(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='Agent'"
         ) as Array<{ name: string }>;
 
         if (result.length === 0) {
           console.log('[DB] Vercel: No tables found, creating schema...');
-          // Create tables using raw SQL from Prisma schema
           await createTables();
           console.log('[DB] Vercel: Schema created, seeding...');
           await inlineSeed();
           console.log('[DB] Vercel: Initialization complete');
         } else {
-          // Tables exist, check if data needs seeding
-          try {
-            const agentCount = await db.agent.count();
-            if (agentCount === 0) {
-              console.log('[DB] Vercel: Tables exist but no data, seeding...');
-              await inlineSeed();
-              console.log('[DB] Vercel: Seeding complete');
-            } else {
-              console.log(`[DB] Vercel: Found ${agentCount} agents, ready`);
-            }
-          } catch {
-            // Table might be partially created, recreate
-            console.log('[DB] Vercel: Table check failed, recreating...');
+          // Tables exist — check if schema is up-to-date by looking for soulPrompt column
+          const columns = await db.$queryRawUnsafe(
+            "PRAGMA table_info(\"Agent\")"
+          ) as Array<{ name: string }>;
+          const columnNames = columns.map(c => c.name);
+          const hasNewColumns = columnNames.includes('soulPrompt') && columnNames.includes('agentMd') && columnNames.includes('boundSkills');
+
+          if (!hasNewColumns) {
+            // Schema outdated — drop all tables and recreate (Vercel data is ephemeral)
+            console.log('[DB] Vercel: Schema outdated, dropping and recreating all tables...');
+            await dropAllTables();
             await createTables();
+            console.log('[DB] Vercel: Schema recreated, seeding...');
             await inlineSeed();
+            console.log('[DB] Vercel: Initialization complete');
+          } else {
+            // Schema is current — check if data needs seeding
+            try {
+              const agentCount = await db.agent.count();
+              if (agentCount === 0) {
+                console.log('[DB] Vercel: Tables exist but no data, seeding...');
+                await inlineSeed();
+                console.log('[DB] Vercel: Seeding complete');
+              } else {
+                console.log(`[DB] Vercel: Found ${agentCount} agents, ready`);
+              }
+            } catch {
+              console.log('[DB] Vercel: Table check failed, recreating...');
+              await dropAllTables();
+              await createTables();
+              await inlineSeed();
+            }
           }
         }
       } catch (err) {
@@ -78,7 +92,19 @@ export async function ensureDatabase(): Promise<void> {
   return initPromise;
 }
 
-// Create all tables using raw SQL
+// Drop all tables (for schema migration on Vercel)
+async function dropAllTables() {
+  const tables = ['Message', 'TeamMember', 'Task', 'Memory', 'Conversation', 'PermissionRule', 'AgentTeam', 'Tool', 'Skill', 'Agent'];
+  for (const table of tables) {
+    try {
+      await db.$executeRawUnsafe(`DROP TABLE IF EXISTS "${table}"`);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+// Create all tables using raw SQL (must match Prisma schema exactly)
 async function createTables() {
   const sql = `
     CREATE TABLE IF NOT EXISTS "Agent" (
@@ -91,6 +117,9 @@ async function createTables() {
       "model" TEXT NOT NULL DEFAULT 'gpt-4',
       "status" TEXT NOT NULL DEFAULT 'active',
       "config" TEXT NOT NULL DEFAULT '{}',
+      "soulPrompt" TEXT NOT NULL DEFAULT '',
+      "agentMd" TEXT NOT NULL DEFAULT '',
+      "boundSkills" TEXT NOT NULL DEFAULT '[]',
       "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" DATETIME NOT NULL
     );
@@ -230,9 +259,9 @@ async function createTables() {
 async function inlineSeed() {
   // Seed agents
   const agents = [
-    { id: 'seed-alpha', name: 'Alpha', description: 'Primary code assistant specialized in writing, reviewing, and refactoring code across multiple languages.', type: 'coding', systemPrompt: 'You are Alpha, a senior coding assistant powered by OpenHarness. You excel at writing clean, efficient code, performing code reviews, debugging complex issues, and refactoring legacy codebases. Always explain your reasoning and suggest best practices. Use markdown code blocks with proper syntax highlighting.', provider: 'openai', model: 'gpt-4', status: 'active', config: JSON.stringify({ temperature: 0.3, maxTokens: 4096, topP: 0.95 }) },
-    { id: 'seed-beta', name: 'Beta', description: 'Research agent specialized in web search, data analysis, and knowledge synthesis.', type: 'react', systemPrompt: 'You are Beta, a research and analysis agent powered by OpenHarness. You specialize in gathering information from the web, analyzing data, synthesizing findings, and producing comprehensive reports.', provider: 'openai', model: 'gpt-4', status: 'active', config: JSON.stringify({ temperature: 0.5, maxTokens: 4096, topP: 0.9 }) },
-    { id: 'seed-gamma', name: 'Gamma', description: 'DevOps agent for CI/CD pipelines, deployment automation, and infrastructure management.', type: 'planning', systemPrompt: 'You are Gamma, a DevOps and infrastructure agent powered by OpenHarness. You specialize in CI/CD pipeline configuration, deployment automation, Docker/container management, cloud infrastructure, and monitoring.', provider: 'openai', model: 'gpt-4', status: 'active', config: JSON.stringify({ temperature: 0.2, maxTokens: 4096, topP: 0.95 }) },
+    { id: 'seed-alpha', name: 'Alpha', description: 'Primary code assistant specialized in writing, reviewing, and refactoring code across multiple languages.', type: 'coding', systemPrompt: 'You are Alpha, a senior coding assistant powered by OpenHarness. You excel at writing clean, efficient code, performing code reviews, debugging complex issues, and refactoring legacy codebases. Always explain your reasoning and suggest best practices. Use markdown code blocks with proper syntax highlighting.', provider: 'nvidia', model: 'z-ai/glm4.7', status: 'active', config: JSON.stringify({ temperature: 0.3, maxTokens: 4096, topP: 0.95 }), soulPrompt: 'You are a meticulous and patient coding expert. You take pride in writing elegant, well-structured code. You always double-check your work.', agentMd: '# Alpha - Code Assistant\n\n## Capabilities\n- Code writing, review, and refactoring\n- Multi-language support (TypeScript, Python, Rust, Go)\n- Debugging and performance optimization\n- Architecture design and best practices', boundSkills: JSON.stringify(['seed-skill-commit', 'seed-skill-review', 'seed-skill-debug']) },
+    { id: 'seed-beta', name: 'Beta', description: 'Research agent specialized in web search, data analysis, and knowledge synthesis.', type: 'react', systemPrompt: 'You are Beta, a research and analysis agent powered by OpenHarness. You specialize in gathering information from the web, analyzing data, synthesizing findings, and producing comprehensive reports.', provider: 'nvidia', model: 'z-ai/glm4.7', status: 'active', config: JSON.stringify({ temperature: 0.5, maxTokens: 4096, topP: 0.9 }), soulPrompt: 'You are naturally curious and thorough in your research. You always verify facts from multiple sources and present balanced, well-researched conclusions.', agentMd: '# Beta - Research Agent\n\n## Capabilities\n- Web search and information gathering\n- Data analysis and synthesis\n- Report generation\n- Source evaluation and fact-checking', boundSkills: JSON.stringify(['seed-skill-web-search', 'seed-skill-summarize', 'seed-skill-plan']) },
+    { id: 'seed-gamma', name: 'Gamma', description: 'DevOps agent for CI/CD pipelines, deployment automation, and infrastructure management.', type: 'planning', systemPrompt: 'You are Gamma, a DevOps and infrastructure agent powered by OpenHarness. You specialize in CI/CD pipeline configuration, deployment automation, Docker/container management, cloud infrastructure, and monitoring.', provider: 'nvidia', model: 'z-ai/glm4.7', status: 'active', config: JSON.stringify({ temperature: 0.2, maxTokens: 4096, topP: 0.95 }), soulPrompt: 'You are methodical and safety-conscious. You always plan infrastructure changes carefully, test thoroughly, and follow infrastructure-as-code best practices.', agentMd: '# Gamma - DevOps Agent\n\n## Capabilities\n- CI/CD pipeline configuration\n- Container orchestration (Docker, K8s)\n- Cloud infrastructure management\n- Monitoring and alerting', boundSkills: JSON.stringify(['seed-skill-plan']) },
   ];
   for (const agent of agents) {
     await db.agent.upsert({
