@@ -106,14 +106,14 @@ async function chatWithZAI(
     const sdkStream = await zai.chat.completions.create({
       messages,
       stream: true,
-      thinking: { type: 'disabled' },
+      thinking: { type: 'enabled' },
     });
     return sdkStream as unknown as ReadableStream<Uint8Array>;
   }
 
   const completion = await zai.chat.completions.create({
     messages,
-    thinking: { type: 'disabled' },
+    thinking: { type: 'enabled' },
   });
 
   const reply = completion.choices[0]?.message?.content || 'No response generated.';

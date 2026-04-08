@@ -256,6 +256,8 @@ function formatTimestamp(ts: string): string {
 // ═══════════════════════════════════════════════════════════════════
 
 function ThinkingBlock({ thinking, isStreaming, isDone }: { thinking: string; isStreaming?: boolean; isDone?: boolean }) {
+  // For loaded messages from DB: start collapsed with thinking available
+  const isLoadedMessage = !isStreaming && !!thinking && isDone;
   const [isOpen, setIsOpen] = useState(false);
   const [hasAutoCollapsed, setHasAutoCollapsed] = useState(false);
 
@@ -290,7 +292,7 @@ function ThinkingBlock({ thinking, isStreaming, isDone }: { thinking: string; is
             <CollapsibleTrigger className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-muted/50 dark:hover:bg-white/[0.03] transition-colors rounded">
               <Brain className="w-3 h-3 text-muted-foreground/50 shrink-0" />
               <span className="text-[11px] text-muted-foreground/70 flex-1">
-                {isStreaming ? 'Thinking…' : 'Thoughts'}
+                {isStreaming ? 'Thinking…' : `Thoughts (${thinking.length} chars)`}
               </span>
               <ChevronDown className={`w-3 h-3 text-muted-foreground/40 transition-transform duration-150 ${isOpen ? 'rotate-0' : '-rotate-90'}`} />
             </CollapsibleTrigger>
@@ -1532,14 +1534,12 @@ function ChatBubble({
         )}
 
         {/* ThinkingBlock — OUTSIDE bubble, above it */}
-        {!isUser && (
-          (message.thinking || (message.isStreaming && !message.content)) && (
-            <ThinkingBlock
-              thinking={message.thinking || ''}
-              isStreaming={message.isStreaming}
-              isDone={!!message.content}
-            />
-          )
+        {!isUser && (message.thinking || message.isStreaming) && (
+          <ThinkingBlock
+            thinking={message.thinking || ''}
+            isStreaming={message.isStreaming}
+            isDone={!message.isStreaming && !!message.content}
+          />
         )}
 
         {/* Planning Indicator — shown during planning phase */}
@@ -2490,6 +2490,15 @@ export default function PlaygroundPage() {
       scrollToBottom();
     }
   }, [messages.length, messages[messages.length - 1]?.content, messages[messages.length - 1]?.thinking, streamingMsgId, scrollToBottom]);
+
+  // ── Auto-load messages when active conversation changes ─────────
+  useEffect(() => {
+    if (!activeConvId || activeConvId.startsWith('conv-')) return;
+    const conv = conversations.find((c) => c.id === activeConvId);
+    if (conv && !(conv as Record<string, unknown>)._hasMessages && conv.messages.length === 0) {
+      loadConversationMessages(activeConvId);
+    }
+  }, [activeConvId, conversations, loadConversationMessages]);
 
   // Track scroll position using native div ref
   useEffect(() => {
