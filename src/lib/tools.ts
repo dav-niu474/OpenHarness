@@ -475,6 +475,36 @@ function getToolDefinitions(): ToolDefinition[] {
       },
     },
 
+    // ── Task Planning ─────────────────────────────────────────
+    {
+      type: 'function',
+      function: {
+        name: 'TaskPlan',
+        description:
+          'Create a structured task plan with numbered steps. Use this for complex tasks that require multiple steps. The plan will be displayed as a visual checklist in the UI.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: {
+              type: 'string',
+              description: 'Brief title of the overall task',
+            },
+            steps: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Ordered list of steps to execute',
+            },
+            complexity: {
+              type: 'string',
+              enum: ['simple', 'moderate', 'complex'],
+              description: 'Estimated complexity of the task',
+            },
+          },
+          required: ['title', 'steps'],
+        },
+      },
+    },
+
     // ── MCP Tools ──────────────────────────────────────────────
     {
       type: 'function',
@@ -586,6 +616,10 @@ async function executeTool(
         return await handleConfig(context);
       case 'Brief':
         return await handleBrief(context);
+
+      // ── Task Planning ───────────────────────────────────────────
+      case 'TaskPlan':
+        return await handleTaskPlan(args);
 
       // ── MCP Tools ─────────────────────────────────────────────
       case 'MCPTool':
@@ -1118,6 +1152,40 @@ async function handleSkill(args: Record<string, unknown>): Promise<ToolResult> {
   }
 
   return { success: false, result: '', error: `Unknown skill action: "${action}". Use "list", "load", or "info".` };
+}
+
+// ── TaskPlan ──────────────────────────────────────────────────
+
+async function handleTaskPlan(args: Record<string, unknown>): Promise<ToolResult> {
+  const title = String(args.title ?? '').trim();
+  if (!title) {
+    return { success: false, result: '', error: 'A non-empty "title" is required for TaskPlan.' };
+  }
+
+  const steps = args.steps;
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return { success: false, result: '', error: 'A non-empty "steps" array is required for TaskPlan.' };
+  }
+
+  const complexity = validateEnum(
+    String(args.complexity ?? 'moderate'),
+    ['simple', 'moderate', 'complex'],
+    'moderate',
+  );
+
+  const formattedSteps = steps
+    .map((step: unknown, i: number) => `${i + 1}. [ ] ${String(step)}`)
+    .join('\n');
+
+  let result = `**Task Plan: ${title}**\nComplexity: ${complexity} | Steps: ${steps.length}\n\n${formattedSteps}`;
+
+  if (complexity === 'complex') {
+    result += '\n\n> This is a complex task. Consider delegating individual subtasks to specialized agents using the Agent tool or SendMessage tool for parallel execution.';
+  }
+
+  result += '\n\nProceeding to execute each step...';
+
+  return { success: true, result };
 }
 
 // ── Config ─────────────────────────────────────────────────────────

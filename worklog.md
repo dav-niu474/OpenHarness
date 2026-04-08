@@ -1020,3 +1020,219 @@ Stage Summary:
   5. First message → auto-titles conversation and syncs to DB
   6. Tool calls, thinking, and results now persisted to DB
 - **Files modified**: `prisma/schema.prisma`, `src/lib/db.ts`, `src/app/api/agent/chat/stream/route.ts`, `src/components/pages/PlaygroundPage.tsx`
+
+---
+
+## Task Decomposition, Checklist Execution & Sub-Agent Delegation
+
+**Date**: 2026-04-08 03:43 UTC
+**Scope**: Agent mode enhancements for structured task planning
+
+### Changes
+
+#### 1. `src/lib/tools.ts` — Added TaskPlan tool
+- **Tool definition**: `TaskPlan` tool with parameters: `title` (string), `steps` (string array), `complexity` (enum: simple/moderate/complex)
+- **Handler `handleTaskPlan`**: Validates inputs, formats steps as numbered checklist (`1. [ ] Step`), includes complexity badge, suggests sub-agent delegation for complex tasks
+- **Switch case**: Added `case 'TaskPlan'` in `executeTool` dispatcher
+
+#### 2. `src/app/api/agent/chat/stream/route.ts` — Enhanced system prompt & SSE events
+- **System prompt**: Appended `## Working Methodology` section instructing the agent to:
+  - Decompose complex tasks into numbered subtasks
+  - Use TaskPlan tool for formal planning
+  - Create markdown checkbox checklists (`- [ ]` / `- [x]`)
+  - Execute steps sequentially with tools
+  - Delegate complex subtasks to sub-agents via Agent/SendMessage tools
+- **Planning phase detection**: Added `isPlanningPhase` flag that detects when content contains `- [ ]` or `Task Plan`, emitting a `{ type: 'planning' }` SSE event
+- **TaskPlan SSE event**: When a `TaskPlan` tool call is executed, emits a structured `{ type: 'task_plan', title, steps, complexity, completedSteps }` SSE event before the standard `tool_executing` event
+- **State tracking**: Added `lastTaskPlanEvent` variable for potential future tracking across loop iterations
+
+#### 3. `src/components/pages/PlaygroundPage.tsx` — UI components & SSE handling
+- **New types**: Added `TaskPlanData` interface and `taskPlan`/`isPlanning` fields to `ChatMessage`
+- **New imports**: `ListChecks`, `ClipboardList` icons from lucide-react
+- **New `LoopStatus` value**: Added `'planning'` to the union type
+- **New `TaskPlanBlock` component** (~140 lines):
+  - Displays task plan title with complexity badge (color-coded: emerald/amber/violet)
+  - Animated progress bar showing completion percentage
+  - Expandable checklist with per-step checkboxes
+  - Completed steps shown with strikethrough text and green checkmarks
+  - Step numbers in monospace font
+  - Streaming animation (pulsing glow on icon) while active
+  - Consistent styling with existing ThinkingBlock and ToolCallCard components
+- **New `PlanningIndicator` component** (~35 lines):
+  - Compact animated indicator shown during planning phase
+  - Rotating `ListChecks` icon with pulsing dots
+  - Violet-themed to match planning visual language
+- **SSE event handlers**:
+  - `planning` event: Sets `loopStatus` to `'planning'`, marks message with `isPlanning: true`
+  - `task_plan` event: Stores structured plan data in `message.taskPlan`, clears `isPlanning` flag
+  - `token` event: Clears `isPlanning` when content streams after plan
+- **Rendered in ChatBubble**: PlanningIndicator and TaskPlanBlock rendered between ThinkingBlock and ToolCallChain
+
+### Backward Compatibility
+- All existing SSE event types (`thinking`, `token`, `tool_call`, `tool_executing`, `tool_result`, `loop_iteration`, `done`) remain unchanged
+- New `planning` and `task_plan` events are additive — older clients simply ignore them
+- Default system prompt still used when no agent config found; methodology section appended after all agent config
+- `ChatMessage` new fields are optional (`taskPlan?: TaskPlanData | null`, `isPlanning?: boolean`)
+
+- **Files modified**: `src/lib/tools.ts`, `src/app/api/agent/chat/stream/route.ts`, `src/components/pages/PlaygroundPage.tsx`
+
+---
+
+## Task ID: postgres-dual-backend - Main Agent
+### Work Task
+Add Vercel Postgres (Neon) support for persistent data storage, enabling dual-database support (SQLite for local dev, Postgres for Vercel production).
+
+### Work Summary
+Successfully rewrote `/home/z/my-project/src/lib/db.ts` to support both SQLite (local development) and Neon Postgres (Vercel production) backends. The file exports a unified `db` object with the exact same Prisma-compatible API, enabling seamless backend switching via environment variables.
+
+**Architecture:**
+- Environment detection: Checks for `POSTGRES_PRISMA_URL` or `POSTGRES_URL` env vars at module load time
+- **SQLite mode** (default): Uses existing Prisma client unchanged — zero behavior changes for local development
+- **Postgres mode** (when Postgres env vars present): Creates a Postgres wrapper object that mimics the full Prisma client API using `@neondatabase/serverless` Pool with raw SQL
+
+**Implementation details:**
+
+1. **Lazy Postgres Pool** — `@neondatabase/serverless` Pool initialized on first use, not at import time, avoiding connection overhead when using SQLite
+
+2. **SQL Helper Functions:**
+   - `buildWhereClause()` — Converts Prisma-style `{ where }` objects to parameterized SQL WHERE clauses, supporting simple equality, `null` checks, and `{ in: [...] }` array operators with `ANY($1::text[])`
+   - `buildOrderByClause()` — Converts Prisma-style `orderBy` to SQL ORDER BY, supporting single field, array of fields, and `asc`/`desc` directions
+   - `generateId()` — CUID-like ID generator (25 chars) for auto-generating primary keys on create
+
+3. **Postgres CREATE TABLE DDL** — Full Postgres-compatible schema with:
+   - `TIMESTAMP NOT NULL DEFAULT NOW()` instead of SQLite `DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`
+   - `BOOLEAN NOT NULL DEFAULT TRUE/FALSE` instead of SQLite `BOOLEAN NOT NULL DEFAULT 1/0`
+   - `CASCADE` on DROP TABLE (via `DROP TABLE ... CASCADE`)
+   - All indexes, foreign keys, and unique constraints preserved
+
+4. **Model implementations** — Each model (agent, conversation, message, task, tool, skill, agentTeam, teamMember, memory, permissionRule) has full method coverage:
+   - `findUnique()` with optional `include` (single relations, `_count` subqueries, array relations via JSON_AGG)
+   - `findMany()` with optional `where`, `orderBy`, `take`, `include`, `select`
+   - `create()` with auto-ID generation, optional `include` for eager-loaded relations
+   - `update()` with dynamic SET clause construction and mandatory `updatedAt = NOW()`
+   - `delete()` with `RETURNING *`
+   - `count()` with optional `where`
+   - `groupBy()` with `_count` aggregation
+   - `upsert()` with `INSERT ... ON CONFLICT ... DO UPDATE SET` for all unique constraint types (primary key, single unique, compound unique)
+
+5. **Include handling patterns:**
+   - `_count` includes → SQL subqueries (e.g., `(SELECT COUNT(*) FROM "Conversation" WHERE "agentId" = "Agent"."id")`)
+   - Single relation includes (agent, team) → `row_to_json()` subqueries or LEFT JOINs
+   - Array relation includes (messages, members) → `JSON_AGG()` subqueries with ORDER BY
+   - Nested relation includes (conversation.agent) → Multi-level `row_to_json()` with subqueries
+   - `select` within includes → Column projection in subqueries
+
+6. **Dual-mode `ensureDatabase()`** — Detects backend and uses appropriate SQL:
+   - Postgres: Uses `information_schema.tables/columns` for schema introspection
+   - SQLite on Vercel: Uses `sqlite_master` and `PRAGMA table_info` (unchanged)
+   - Schema version detection (checks for `soulPrompt`, `agentMd`, `boundSkills` columns)
+
+7. **Shared seeding** — `inlineSeed()` uses `db.xxx.upsert()` which works identically on both backends, enabling the same seed code for SQLite and Postgres
+
+8. **`$queryRawUnsafe` / `$executeRawUnsafe`** — Implemented on Postgres wrapper to execute arbitrary SQL against the pool, used by `ensureDatabase()` for schema checks
+
+**No other files were modified** — All existing API routes, tools.ts, and UI components continue to work without changes because the exported `db` object maintains the exact same API surface.
+
+**Verification:**
+- `bun run lint` passes with zero errors
+- No TypeScript compilation errors
+- SQLite mode: Fully backward compatible, existing Prisma client behavior preserved
+- Postgres mode: Will activate when `POSTGRES_URL` or `POSTGRES_PRISMA_URL` env var is set
+
+**Files modified:**
+- `src/lib/db.ts` (complete rewrite with dual-backend support)
+
+---
+
+## Task ID: collaborative-multiagent - full-stack-developer
+### Work Task
+Fix Multi-Agent mode to support collaborative workflow instead of independent work. Create a collaborative multi-agent API endpoint, update PlaygroundPage to use it, and add collaborative phase divider components.
+
+### Work Summary
+Successfully implemented true collaborative multi-agent mode that replaces the previous sequential independent workflow. All changes compile cleanly with zero lint errors.
+
+**1. Collaborative API Endpoint (`src/app/api/agent/chat/collaborative/route.ts`) — New**
+
+Created a new SSE streaming endpoint at `POST /api/agent/chat/collaborative` implementing a 3-phase collaborative workflow:
+
+- **Phase 1 — Coordinator**: Analyzes the user's message and creates a work plan assigning specific tasks to each agent. Streams the plan as `coordinator_plan` SSE events.
+- **Phase 2 — Sequential Execution**: Each agent works in sequence, receiving the user's message PLUS all previous agents' responses as collaborative context. Each agent can reference and build on prior work. Supports tool calls with the same agent loop pattern as the existing stream endpoint.
+- **Phase 3 — Synthesis**: A final synthesis agent combines all agent contributions into a coherent, comprehensive response. Streams as `synthesis` SSE events.
+
+**SSE Event Types:**
+- `{ type: 'phase', phase: 'coordinating|executing|synthesizing', agentId?, agentIndex?, totalAgents? }`
+- `{ type: 'coordinator_plan', content, model }` — Coordinator plan tokens
+- `{ type: 'thinking', content, agentId, model }` — Agent thinking/reasoning
+- `{ type: 'token', content, agentId, model }` — Agent content tokens
+- `{ type: 'tool_call', ... }` — Tool call detection
+- `{ type: 'tool_executing', ... }` — Tool execution start
+- `{ type: 'tool_result', ... }` — Tool execution result
+- `{ type: 'agent_done', agentId, content, thinkingLength, toolCalls }`
+- `{ type: 'synthesis', content, model }` — Synthesis tokens
+- `{ type: 'done', usage, agentCount, loopIterations, model }`
+
+**DB Persistence:** Saves coordinator plan, each agent's response, and the synthesis as separate messages in the conversation.
+
+**2. PlaygroundPage Updates (`src/components/pages/PlaygroundPage.tsx`) — Modified**
+
+- **New Types**: Added `CollaborativePhase`, `LoopStatus` type, and extended `ChatMessage` with `isSynthesis`, `collaborativePhase`, `previousAgentContext` fields.
+- **New State**: `collabPhase` and `collabAgentInfo` to track collaborative workflow progress.
+- **`streamCollaborativeResponse()`**: New callback that handles all SSE event types from the collaborative endpoint, creating phase dividers, agent response messages, and synthesis messages dynamically.
+- **`handleSend()`**: Replaced the old sequential multi-agent loop with a single call to `streamCollaborativeResponse()`.
+- **`CoordinatingState`**: Enhanced to show phase-specific loading states (coordinating, executing with agent info, synthesizing).
+
+**3. New Components:**
+- **`CollaborativePhaseDivider`**: Shows phase-specific dividers with icons and context (coordinating=emerald Network, executing=agent-colored with index, synthesizing=violet Wand2).
+- **Enhanced `AgentDivider`**: Now accepts `context` prop for "Building on previous agents' work" hint.
+- **Synthesis badge**: Messages with `isSynthesis` show a violet "Synthesis" badge with Wand2 icon.
+- **Coordinator badge**: Messages from `agentId='coordinator'` show an emerald "Coordinator" badge.
+
+**4. UI Flow for Multi-Agent:**
+1. User sends message → "Coordinating..." spinner
+2. Coordinator plan streams with "Coordinator" badge
+3. Agent 1 divider + response (with "starting the workflow" hint)
+4. Agent 2 divider + response (with "building on collaborators" hint + arrow)
+5. Agent 3 divider + response (same collaborative context)
+6. "Final Synthesis" divider (violet) + synthesized response with badge
+7. Status bar shows "Synthesizing — Combining agent responses"
+
+**Files created/modified:**
+- `src/app/api/agent/chat/collaborative/route.ts` (new)
+- `src/components/pages/PlaygroundPage.tsx` (modified: types, state, stream handler, handleSend, components, status indicators)
+
+---
+Task ID: 1
+Agent: Main Coordinator
+Task: Add Vercel Postgres support, fix agent mode task decomposition, fix multi-agent collaborative mode
+
+Work Log:
+- Installed @neondatabase/serverless and @prisma/adapter-neon packages
+- Subagent 1: Rewrote src/lib/db.ts to support dual-backend (SQLite + Postgres)
+  - Environment detection: checks POSTGRES_URL/POSTGRES_PRISMA_URL env vars
+  - SQLite mode: uses existing Prisma client unchanged
+  - Postgres mode: creates full Prisma-compatible API using Neon Pool + raw SQL
+  - Supports all 10 models with findUnique, findMany, create, update, delete, count, groupBy, upsert
+  - Handles includes (relations, _count), where clauses, orderBy, take
+  - Postgres CREATE TABLE DDL with proper types (TIMESTAMP, BOOLEAN, etc.)
+  - Dual-mode ensureDatabase() for auto-init and seeding
+- Subagent 2: Fixed agent mode with task decomposition
+  - Added TaskPlan tool definition and handler in src/lib/tools.ts
+  - Enhanced system prompt with Working Methodology section in stream/route.ts
+  - Added planning phase detection and SSE events
+  - Added TaskPlanBlock and PlanningIndicator UI components in PlaygroundPage.tsx
+- Subagent 3: Fixed multi-agent collaborative mode
+  - Created src/app/api/agent/chat/collaborative/route.ts with 3-phase workflow:
+    Phase 1: Coordinator creates work plan
+    Phase 2: Sequential collaborative execution (agents see previous agents' work)
+    Phase 3: Synthesis combines all contributions
+  - Updated PlaygroundPage.tsx with streamCollaborativeResponse()
+  - Added CollaborativePhaseDivider component
+  - Multi-agent mode now uses /api/agent/chat/collaborative endpoint
+- All changes pass ESLint with zero errors
+- Dev server running on port 3000, all APIs verified working
+
+Stage Summary:
+- Database: Dual-backend support (SQLite local + Postgres Vercel) ready
+- Agent Mode: Task decomposition with TaskPlan tool and checklist visualization
+- Multi-Agent: True collaborative workflow with context sharing and synthesis
+- Key files modified: db.ts (1837 lines), tools.ts (1297 lines), stream/route.ts (507 lines), collaborative/route.ts (611 lines), PlaygroundPage.tsx (3758 lines)

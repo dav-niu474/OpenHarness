@@ -34,6 +34,10 @@ import {
   Network,
   ToggleLeft,
   ToggleRight,
+  Wand2,
+  ArrowRight,
+  ListChecks,
+  ClipboardList,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -103,6 +107,15 @@ interface SkillCallInfo {
   category?: string;
 }
 
+type CollaborativePhase = 'coordinating' | 'executing' | 'synthesizing';
+
+interface TaskPlanData {
+  title: string;
+  steps: string[];
+  complexity: string;
+  completedSteps: number[];
+}
+
 interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -116,6 +129,11 @@ interface ChatMessage {
   isStreaming?: boolean;
   tokenCount?: number;
   isMultiAgentDivider?: boolean;
+  isSynthesis?: boolean;
+  collaborativePhase?: CollaborativePhase;
+  previousAgentContext?: string;
+  taskPlan?: TaskPlanData | null;
+  isPlanning?: boolean;
 }
 
 interface ConversationItem {
@@ -136,6 +154,8 @@ interface SkillData {
 }
 
 type AgentMode = 'single' | 'multi';
+
+type LoopStatus = 'idle' | 'thinking' | 'planning' | 'executing' | 'tool_executing' | 'coordinating' | 'synthesizing';
 
 // ═══════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -755,6 +775,187 @@ function ToolCallChain({
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// TASK PLAN BLOCK COMPONENT
+// ═══════════════════════════════════════════════════════════════════
+
+function TaskPlanBlock({
+  taskPlan,
+  isStreaming,
+}: {
+  taskPlan: TaskPlanData;
+  isStreaming?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(true);
+  const completedCount = taskPlan.completedSteps?.length || 0;
+  const totalCount = taskPlan.steps?.length || 0;
+  const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+
+  const complexityConfig = {
+    simple: { color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-950/30', border: 'border-emerald-200 dark:border-emerald-800', label: 'Simple' },
+    moderate: { color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-950/30', border: 'border-amber-200 dark:border-amber-800', label: 'Moderate' },
+    complex: { color: 'text-violet-500', bg: 'bg-violet-50 dark:bg-violet-950/30', border: 'border-violet-200 dark:border-violet-800', label: 'Complex' },
+  };
+  const cplx = complexityConfig[taskPlan.complexity as keyof typeof complexityConfig] || complexityConfig.moderate;
+
+  if (!taskPlan.steps || taskPlan.steps.length === 0) return null;
+
+  return (
+    <div className="my-2 rounded-xl overflow-hidden">
+      <div className={`rounded-xl border ${cplx.border} ${cplx.bg} backdrop-blur-sm`}>
+        {/* Header */}
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="w-full flex items-center gap-2.5 px-4 py-3 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors text-left"
+        >
+          <div className="relative">
+            <div className={`w-7 h-7 rounded-lg ${cplx.bg} flex items-center justify-center`}>
+              <ClipboardList className={`w-3.5 h-3.5 ${cplx.color}`} />
+            </div>
+            {isStreaming && (
+              <motion.div
+                className={`absolute -inset-0.5 rounded-lg ${cplx.color.replace('text-', 'bg-').replace('500', '400')}/20 blur-sm`}
+                animate={{ opacity: [0.3, 0.6, 0.3] }}
+                transition={{ duration: 1.5, repeat: Infinity }}
+              />
+            )}
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200 block truncate">
+              {taskPlan.title}
+            </span>
+            <div className="flex items-center gap-2 mt-0.5">
+              <Badge className={`text-[9px] h-4 px-1.5 ${cplx.color} ${cplx.bg} ${cplx.border} border`}>
+                {cplx.label}
+              </Badge>
+              <span className="text-[10px] text-muted-foreground">
+                {completedCount}/{totalCount} steps
+              </span>
+            </div>
+          </div>
+
+          {/* Progress indicator */}
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="w-16 h-1.5 rounded-full bg-zinc-200 dark:bg-zinc-700 overflow-hidden">
+              <motion.div
+                className={`h-full rounded-full ${progressPercent === 100 ? 'bg-emerald-500' : 'bg-amber-400'}`}
+                initial={{ width: 0 }}
+                animate={{ width: `${progressPercent}%` }}
+                transition={{ duration: 0.5, ease: 'easeOut' }}
+              />
+            </div>
+            <span className={`text-[10px] font-mono ${cplx.color}`}>
+              {progressPercent}%
+            </span>
+          </div>
+
+          <motion.div animate={{ rotate: isOpen ? 180 : 0 }} transition={{ duration: 0.2 }}>
+            <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
+          </motion.div>
+        </button>
+
+        {/* Checklist */}
+        <AnimatePresence initial={false}>
+          {isOpen && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+              className="overflow-hidden"
+            >
+              <div className="px-4 pb-3 space-y-1.5 border-t border-zinc-200/50 dark:border-zinc-700/50 pt-2.5">
+                {taskPlan.steps.map((step, i) => {
+                  const stepIndex = i + 1;
+                  const isCompleted = taskPlan.completedSteps?.includes(stepIndex) || false;
+
+                  return (
+                    <motion.div
+                      key={i}
+                      initial={isStreaming ? { opacity: 0, x: -8 } : false}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: i * 0.05, duration: 0.2 }}
+                      className="flex items-start gap-2.5 py-1"
+                    >
+                      {/* Checkbox */}
+                      <div className="relative mt-0.5 shrink-0">
+                        {isCompleted ? (
+                          <motion.div
+                            initial={{ scale: 0.5 }}
+                            animate={{ scale: 1 }}
+                            transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+                          >
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                          </motion.div>
+                        ) : (
+                          <div className="w-4 h-4 rounded border-2 border-zinc-300 dark:border-zinc-600" />
+                        )}
+                      </div>
+
+                      {/* Step text */}
+                      <span className={`text-xs leading-relaxed flex-1 ${isCompleted ? 'text-muted-foreground line-through' : 'text-zinc-700 dark:text-zinc-300'}`}>
+                        {step}
+                      </span>
+
+                      {/* Step number */}
+                      <span className="text-[9px] text-muted-foreground/50 font-mono shrink-0 mt-px">
+                        {stepIndex}
+                      </span>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PLANNING INDICATOR COMPONENT
+// ═══════════════════════════════════════════════════════════════════
+
+function PlanningIndicator() {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
+      className="flex items-center gap-2.5 px-3 py-2 my-1.5 rounded-lg bg-violet-50 dark:bg-violet-950/20 border border-violet-200/60 dark:border-violet-800/40"
+    >
+      <motion.div
+        animate={{ rotate: 360 }}
+        transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+      >
+        <ListChecks className="w-4 h-4 text-violet-500" />
+      </motion.div>
+      <span className="text-[11px] font-medium text-violet-700 dark:text-violet-300">
+        Creating task plan...
+      </span>
+      <motion.div className="flex gap-0.5" aria-hidden="true">
+        <motion.span
+          className="w-1 h-1 rounded-full bg-violet-400"
+          animate={{ opacity: [0.3, 1, 0.3] }}
+          transition={{ duration: 0.8, repeat: Infinity, delay: 0 }}
+        />
+        <motion.span
+          className="w-1 h-1 rounded-full bg-violet-400"
+          animate={{ opacity: [0.3, 1, 0.3] }}
+          transition={{ duration: 0.8, repeat: Infinity, delay: 0.2 }}
+        />
+        <motion.span
+          className="w-1 h-1 rounded-full bg-violet-400"
+          animate={{ opacity: [0.3, 1, 0.3] }}
+          transition={{ duration: 0.8, repeat: Infinity, delay: 0.4 }}
+        />
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // AGENT BADGE COMPONENT
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1082,22 +1283,124 @@ function MessageActions({
 // MULTI-AGENT DIVIDER
 // ═══════════════════════════════════════════════════════════════════
 
-function AgentDivider({ agentId }: { agentId: string }) {
+function AgentDivider({ agentId, context }: { agentId: string; context?: string }) {
   const agent = getAgentConfig(agentId);
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
-      className="flex items-center gap-3 my-4"
+      className="my-4"
     >
-      <div className="flex-1 h-px bg-gradient-to-r from-transparent via-zinc-300 dark:via-zinc-700 to-transparent" />
-      <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${agent.bgColor} border ${agent.borderColor}`}>
-        <span className="text-xs">{agent.icon}</span>
-        <span className={`text-xs font-semibold ${agent.textColor}`}>{agent.name}</span>
+      <div className="flex items-center gap-3">
+        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-zinc-300 dark:via-zinc-700 to-transparent" />
+        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${agent.bgColor} border ${agent.borderColor}`}>
+          <span className="text-xs">{agent.icon}</span>
+          <span className={`text-xs font-semibold ${agent.textColor}`}>{agent.name}</span>
+        </div>
+        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-zinc-300 dark:via-zinc-700 to-transparent" />
       </div>
-      <div className="flex-1 h-px bg-gradient-to-r from-transparent via-zinc-300 dark:via-zinc-700 to-transparent" />
+      {context && (
+        <p className="text-[10px] text-muted-foreground/70 mt-1.5 text-center italic px-4">
+          Building on previous agents&apos; work
+        </p>
+      )}
     </motion.div>
   );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// COLLABORATIVE PHASE DIVIDER
+// ═══════════════════════════════════════════════════════════════════
+
+function CollaborativePhaseDivider({
+  phase,
+  agentId,
+  agentIndex,
+  totalAgents,
+}: {
+  phase: CollaborativePhase;
+  agentId?: string;
+  agentIndex?: number;
+  totalAgents?: number;
+}) {
+  if (phase === 'coordinating') {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex items-center gap-3 my-4"
+      >
+        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-emerald-300 dark:via-emerald-700 to-transparent" />
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800">
+          <Network className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">Coordinating</span>
+        </div>
+        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-emerald-300 dark:via-emerald-700 to-transparent" />
+      </motion.div>
+    );
+  }
+
+  if (phase === 'synthesizing') {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="my-4"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-violet-300 dark:via-violet-700 to-transparent" />
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800">
+            <Wand2 className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+            <span className="text-xs font-semibold text-violet-600 dark:text-violet-400">Final Synthesis</span>
+          </div>
+          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-violet-300 dark:via-violet-700 to-transparent" />
+        </div>
+        <p className="text-[10px] text-muted-foreground/70 mt-1.5 text-center italic px-4">
+          Combining insights from all agents into a coherent response
+        </p>
+      </motion.div>
+    );
+  }
+
+  // Executing phase with agent info
+  if (phase === 'executing' && agentId) {
+    const agent = getAgentConfig(agentId);
+    const isBuildingOnPrevious = agentIndex !== undefined && agentIndex !== undefined && agentIndex > 0;
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="my-4"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-zinc-300 dark:via-zinc-700 to-transparent" />
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${agent.bgColor} border ${agent.borderColor}`}>
+            <span className="text-xs">{agent.icon}</span>
+            <span className={`text-xs font-semibold ${agent.textColor}`}>{agent.name}</span>
+            {totalAgents && agentIndex !== undefined && (
+              <span className="text-[10px] text-muted-foreground ml-1">
+                ({agentIndex + 1}/{totalAgents})
+              </span>
+            )}
+            {isBuildingOnPrevious && (
+              <>
+                <ArrowRight className="w-3 h-3 text-muted-foreground/50" />
+                <span className="text-[10px] text-muted-foreground">building on collaborators</span>
+              </>
+            )}
+          </div>
+          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-zinc-300 dark:via-zinc-700 to-transparent" />
+        </div>
+        {isBuildingOnPrevious && (
+          <p className="text-[10px] text-muted-foreground/70 mt-1.5 text-center italic px-4">
+            Can see and reference previous agents&apos; work
+          </p>
+        )}
+      </motion.div>
+    );
+  }
+
+  return null;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1118,8 +1421,18 @@ function ChatBubble({
   const agent = getAgentConfig(message.agentId || 'alpha');
   const isUser = message.role === 'user';
 
+  if (message.isMultiAgentDivider && message.collaborativePhase) {
+    return (
+      <CollaborativePhaseDivider
+        phase={message.collaborativePhase}
+        agentId={message.agentId}
+        agentIndex={message.previousAgentContext ? 1 : undefined}
+      />
+    );
+  }
+
   if (message.isMultiAgentDivider && message.agentId) {
-    return <AgentDivider agentId={message.agentId} />;
+    return <AgentDivider agentId={message.agentId} context={message.previousAgentContext} />;
   }
 
   if (message.role === 'tool' && message.toolCalls?.length) {
@@ -1184,8 +1497,32 @@ function ChatBubble({
 
       {/* Message Content */}
       <div className={`flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
+        {/* Synthesis label for synthesis messages */}
+        {!isUser && message.isSynthesis && showAvatar && (
+          <div className="flex items-center gap-1.5 px-1">
+            <Badge variant="outline" className="text-[10px] h-5 px-1.5 text-violet-600 dark:text-violet-400 border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/20">
+              <Wand2 className="w-2.5 h-2.5 mr-0.5" />
+              Synthesis
+            </Badge>
+            {message.timestamp && (
+              <span className="text-[10px] text-muted-foreground">{formatTimestamp(message.timestamp)}</span>
+            )}
+          </div>
+        )}
+        {/* Coordinator label */}
+        {!isUser && message.agentId === 'coordinator' && showAvatar && (
+          <div className="flex items-center gap-1.5 px-1">
+            <Badge variant="outline" className="text-[10px] h-5 px-1.5 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/20">
+              <Network className="w-2.5 h-2.5 mr-0.5" />
+              Coordinator
+            </Badge>
+            {message.timestamp && (
+              <span className="text-[10px] text-muted-foreground">{formatTimestamp(message.timestamp)}</span>
+            )}
+          </div>
+        )}
         {/* Agent info header for assistant */}
-        {!isUser && message.agentId && showAvatar && (
+        {!isUser && message.agentId && message.agentId !== 'coordinator' && !message.isSynthesis && showAvatar && (
           <div className="flex items-center gap-1.5 px-1">
             <span className="text-[11px] font-semibold text-foreground">{agent.name}</span>
             {message.timestamp && (
@@ -1203,6 +1540,19 @@ function ChatBubble({
               isDone={!!message.content}
             />
           )
+        )}
+
+        {/* Planning Indicator — shown during planning phase */}
+        {!isUser && message.isPlanning && message.isStreaming && !message.taskPlan && (
+          <PlanningIndicator />
+        )}
+
+        {/* TaskPlan Block — structured checklist */}
+        {!isUser && message.taskPlan && (
+          <TaskPlanBlock
+            taskPlan={message.taskPlan}
+            isStreaming={message.isStreaming}
+          />
         )}
 
         {/* ToolCallChain — OUTSIDE bubble, between ThinkingBlock and bubble */}
@@ -1657,7 +2007,72 @@ function MultiAgentChips({
 // COORDINATING LOADING STATE
 // ═══════════════════════════════════════════════════════════════════
 
-function CoordinatingState({ agents }: { agents: string[] }) {
+function CoordinatingState({ agents, phase, agentInfo }: { agents: string[]; phase?: CollaborativePhase | null; agentInfo?: { agentId: string; index: number; total: number } | null }) {
+  if (phase === 'synthesizing') {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex flex-col items-center justify-center py-6"
+      >
+        <div className="relative">
+          <motion.div
+            className="w-10 h-10 rounded-full bg-violet-500/10 flex items-center justify-center"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
+          >
+            <Wand2 className="w-5 h-5 text-violet-500" />
+          </motion.div>
+          <motion.div
+            className="absolute w-2 h-2 rounded-full bg-violet-400"
+            animate={{ scale: [1, 2, 1], opacity: [0.7, 0, 0.7] }}
+            transition={{ duration: 1.5, repeat: Infinity }}
+            style={{ top: -4, right: -4 }}
+          />
+        </div>
+        <p className="text-xs text-violet-600 dark:text-violet-400 mt-3 font-medium">Synthesizing responses...</p>
+        <p className="text-[10px] text-muted-foreground/60 mt-1">
+          Combining insights from all agents
+        </p>
+      </motion.div>
+    );
+  }
+
+  if (phase === 'executing' && agentInfo) {
+    const agentConf = getAgentConfig(agentInfo.agentId);
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="flex flex-col items-center justify-center py-6"
+      >
+        <div className="relative">
+          <motion.div
+            className="w-10 h-10 rounded-full flex items-center justify-center"
+            style={{ backgroundColor: `${agentConf.color.replace('bg-', 'rgb(')}33)` }}
+            animate={{ scale: [1, 1.05, 1] }}
+            transition={{ duration: 2, repeat: Infinity }}
+          >
+            <span className="text-lg">{agentConf.icon}</span>
+          </motion.div>
+          <motion.div
+            className="absolute w-2 h-2 rounded-full"
+            style={{ backgroundColor: agentConf.color.replace('bg-', 'rgb(') }}
+            animate={{ scale: [1, 2, 1], opacity: [0.7, 0, 0.7] }}
+            transition={{ duration: 1.5, repeat: Infinity }}
+          />
+        </div>
+        <p className="text-xs font-medium mt-3" style={{ color: `var(--${agentConf.textColor.replace('text-', '')})` }}>
+          {agentConf.name} is working...
+        </p>
+        <p className="text-[10px] text-muted-foreground/60 mt-1">
+          Agent {agentInfo.index + 1} of {agentInfo.total}
+          {agentInfo.index > 0 ? ' · Building on collaborators' : ' · Starting the workflow'}
+        </p>
+      </motion.div>
+    );
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -1687,7 +2102,7 @@ function CoordinatingState({ agents }: { agents: string[] }) {
       </div>
       <p className="text-xs text-muted-foreground mt-3 font-medium">Coordinating agents...</p>
       <p className="text-[10px] text-muted-foreground/60 mt-1">
-        Processing with {agents.map((a) => getAgentConfig(a).name).join(', ')}
+        Creating work plan for {agents.map((a) => getAgentConfig(a).name).join(', ')}
       </p>
     </motion.div>
   );
@@ -1826,7 +2241,7 @@ function AgentLoopStatusBar({
   thinkingChars,
   activeToolCount,
 }: {
-  status: 'idle' | 'thinking' | 'executing' | 'tool_executing' | 'coordinating';
+  status: LoopStatus;
   tokenCount: number;
   messageCount: number;
   thinkingChars: number;
@@ -1873,7 +2288,14 @@ function AgentLoopStatusBar({
         <>
           <Network className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
           <span className="text-xs text-emerald-600 font-medium">Coordinating</span>
-          <span className="text-xs text-muted-foreground/60">— Multi-agent orchestration</span>
+          <span className="text-xs text-muted-foreground/60">— Creating collaborative plan</span>
+        </>
+      )}
+      {status === 'synthesizing' && (
+        <>
+          <Wand2 className="w-3.5 h-3.5 text-violet-500 animate-pulse" />
+          <span className="text-xs text-violet-600 font-medium">Synthesizing</span>
+          <span className="text-xs text-muted-foreground/60">— Combining agent responses</span>
         </>
       )}
       <div className="ml-auto flex items-center gap-3">
@@ -1912,7 +2334,9 @@ export default function PlaygroundPage() {
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [inputValue, setInputValue] = useState('');
-  const [loopStatus, setLoopStatus] = useState<'idle' | 'thinking' | 'executing' | 'tool_executing' | 'coordinating'>('idle');
+  const [loopStatus, setLoopStatus] = useState<LoopStatus>('idle');
+  const [collabPhase, setCollabPhase] = useState<CollaborativePhase | null>(null);
+  const [collabAgentInfo, setCollabAgentInfo] = useState<{ agentId: string; index: number; total: number } | null>(null);
   const [tokenCount, setTokenCount] = useState(0);
   const [totalThinkingChars, setTotalThinkingChars] = useState(0);
   const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
@@ -2167,6 +2591,8 @@ export default function PlaygroundPage() {
   const handleStop = useCallback(() => {
     abortControllerRef.current?.abort();
     setLoopStatus('idle');
+    setCollabPhase(null);
+    setCollabAgentInfo(null);
     if (streamingMsgId) {
       setConversations((prev) =>
         prev.map((c) => ({
@@ -2181,7 +2607,396 @@ export default function PlaygroundPage() {
   }, [streamingMsgId]);
 
 
-  // Stream a single agent response
+  // Stream collaborative multi-agent response
+  const streamCollaborativeResponse = useCallback(async (
+    agentIds: string[],
+    message: string,
+    convId: string,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const res = await fetch('/api/agent/chat/collaborative', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        agentIds,
+        conversationId: convId,
+        modelId: selectedModel,
+        skillIds: enabledSkills,
+      }),
+      signal,
+    });
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    // Track the current active streaming message ID for each phase
+    let currentMsgId: string | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+        try {
+          const json = JSON.parse(trimmed.slice(6));
+
+          // ── Phase events ─────────────────────────────────
+          if (json.type === 'phase') {
+            setCollabPhase(json.phase);
+            setLoopStatus(json.phase === 'coordinating' ? 'coordinating' : json.phase === 'synthesizing' ? 'synthesizing' : 'thinking');
+
+            if (json.phase === 'coordinating') {
+              // Add coordinator divider
+              const divId = `collab-coord-${Date.now()}`;
+              const coordMsg: ChatMessage = {
+                id: divId,
+                role: 'assistant',
+                content: '',
+                collaborativePhase: 'coordinating',
+                isMultiAgentDivider: true,
+                isStreaming: true,
+              };
+              setConversations((prev) =>
+                prev.map((c) => c.id !== convId ? c : { ...c, messages: [...c.messages, coordMsg] })
+              );
+              currentMsgId = divId;
+
+              // Now add a content message for the coordinator plan
+              const planMsgId = `collab-plan-${Date.now()}`;
+              const planMsg: ChatMessage = {
+                id: planMsgId,
+                role: 'assistant',
+                content: '',
+                agentId: 'coordinator',
+                model: json.model || currentModel?.name,
+                timestamp: new Date().toISOString(),
+                isStreaming: true,
+              };
+              setConversations((prev) =>
+                prev.map((c) => c.id !== convId ? c : { ...c, messages: [...c.messages, planMsg] })
+              );
+              currentMsgId = planMsgId;
+              setStreamingMsgId(planMsgId);
+            } else if (json.phase === 'executing') {
+              // Finalize coordinator plan message
+              if (currentMsgId) {
+                setConversations((prev) =>
+                  prev.map((c) => ({
+                    ...c,
+                    messages: c.messages.map((m) =>
+                      m.id === currentMsgId ? { ...m, isStreaming: false } : m
+                    ),
+                  }))
+                );
+              }
+
+              if (json.agentId) {
+                setCollabAgentInfo({ agentId: json.agentId, index: json.agentIndex || 0, total: json.totalAgents || agentIds.length });
+
+                // Add executing phase divider
+                const execDivId = `collab-exec-${Date.now()}`;
+                const execDivMsg: ChatMessage = {
+                  id: execDivId,
+                  role: 'assistant',
+                  content: '',
+                  collaborativePhase: 'executing',
+                  agentId: json.agentId,
+                  isMultiAgentDivider: true,
+                };
+                setConversations((prev) =>
+                  prev.map((c) => c.id !== convId ? c : { ...c, messages: [...c.messages, execDivMsg] })
+                );
+
+                // Add agent response message
+                const agentMsgId = `collab-agent-${json.agentId}-${Date.now()}`;
+                const agentMsg: ChatMessage = {
+                  id: agentMsgId,
+                  role: 'assistant',
+                  content: '',
+                  thinking: '',
+                  agentId: json.agentId,
+                  model: json.model || currentModel?.name,
+                  timestamp: new Date().toISOString(),
+                  isStreaming: true,
+                  previousAgentContext: json.agentIndex > 0 ? 'previous' : undefined,
+                };
+                setConversations((prev) =>
+                  prev.map((c) => c.id !== convId ? c : { ...c, messages: [...c.messages, agentMsg] })
+                );
+                currentMsgId = agentMsgId;
+                setStreamingMsgId(agentMsgId);
+              }
+            } else if (json.phase === 'synthesizing') {
+              // Finalize current agent message
+              if (currentMsgId) {
+                setConversations((prev) =>
+                  prev.map((c) => ({
+                    ...c,
+                    messages: c.messages.map((m) =>
+                      m.id === currentMsgId ? { ...m, isStreaming: false } : m
+                    ),
+                  }))
+                );
+              }
+
+              setCollabAgentInfo(null);
+
+              // Add synthesis divider
+              const synthDivId = `collab-synth-div-${Date.now()}`;
+              const synthDivMsg: ChatMessage = {
+                id: synthDivId,
+                role: 'assistant',
+                content: '',
+                collaborativePhase: 'synthesizing',
+                isMultiAgentDivider: true,
+              };
+              setConversations((prev) =>
+                prev.map((c) => c.id !== convId ? c : { ...c, messages: [...c.messages, synthDivMsg] })
+              );
+
+              // Add synthesis content message
+              const synthMsgId = `collab-synth-${Date.now()}`;
+              const synthMsg: ChatMessage = {
+                id: synthMsgId,
+                role: 'assistant',
+                content: '',
+                model: json.model || currentModel?.name,
+                timestamp: new Date().toISOString(),
+                isStreaming: true,
+                isSynthesis: true,
+              };
+              setConversations((prev) =>
+                prev.map((c) => c.id !== convId ? c : { ...c, messages: [...c.messages, synthMsg] })
+              );
+              currentMsgId = synthMsgId;
+              setStreamingMsgId(synthMsgId);
+            }
+          }
+
+          // ── Coordinator plan tokens ──────────────────────
+          else if (json.type === 'coordinator_plan' && json.content) {
+            setLoopStatus('coordinating');
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === currentMsgId ? { ...m, content: m.content + json.content, isStreaming: true } : m
+                  ),
+                }))
+              );
+            }
+          }
+
+          // ── Agent thinking ───────────────────────────────
+          else if (json.type === 'thinking' && json.content && json.agentId) {
+            setLoopStatus('thinking');
+            setTotalThinkingChars((prev) => prev + json.content.length);
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === currentMsgId ? { ...m, thinking: (m.thinking || '') + json.content, isStreaming: true } : m
+                  ),
+                }))
+              );
+            }
+          }
+
+          // ── Agent tokens ─────────────────────────────────
+          else if (json.type === 'token' && json.content && json.agentId) {
+            setLoopStatus('executing');
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === currentMsgId ? { ...m, content: m.content + json.content, isStreaming: true } : m
+                  ),
+                }))
+              );
+            }
+          }
+
+          // ── Tool calls ───────────────────────────────────
+          else if (json.type === 'tool_call' && json.agentId) {
+            setLoopStatus('tool_executing');
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) => {
+                    if (m.id !== currentMsgId) return m;
+                    const existingCalls = [...(m.toolCalls || [])];
+                    const existingIdx = existingCalls.findIndex((tc) => tc.id === json.toolCallId);
+                    const parsedInput = json.arguments
+                      ? (() => { try { return JSON.parse(json.arguments); } catch { return { raw: json.arguments }; } })()
+                      : {};
+                    if (existingIdx >= 0) {
+                      existingCalls[existingIdx] = { ...existingCalls[existingIdx], input: parsedInput, status: 'running', iteration: json.iteration };
+                    } else {
+                      existingCalls.push({ id: json.toolCallId, tool: json.name || 'unknown', input: parsedInput, status: 'running', iteration: json.iteration });
+                    }
+                    return { ...m, toolCalls: existingCalls };
+                  }),
+                }))
+              );
+            }
+          }
+
+          // ── Tool executing ───────────────────────────────
+          else if (json.type === 'tool_executing' && json.agentId) {
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) => {
+                    if (m.id !== currentMsgId) return m;
+                    const existingCalls = [...(m.toolCalls || [])];
+                    const existingIdx = existingCalls.findIndex((tc) => tc.id === json.toolCallId);
+                    if (existingIdx >= 0) {
+                      existingCalls[existingIdx] = { ...existingCalls[existingIdx], status: 'running' };
+                    }
+                    return { ...m, toolCalls: existingCalls };
+                  }),
+                }))
+              );
+            }
+          }
+
+          // ── Tool result ──────────────────────────────────
+          else if (json.type === 'tool_result' && json.agentId) {
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) => {
+                    if (m.id !== currentMsgId) return m;
+                    const existingCalls = [...(m.toolCalls || [])];
+                    const existingIdx = existingCalls.findIndex((tc) => tc.id === json.toolCallId);
+                    if (existingIdx >= 0) {
+                      existingCalls[existingIdx] = { ...existingCalls[existingIdx], result: json.result, status: json.success ? 'success' : 'error', duration: json.duration, iteration: json.iteration };
+                    }
+                    return { ...m, toolCalls: existingCalls };
+                  }),
+                }))
+              );
+            }
+          }
+
+          // ── Agent done ───────────────────────────────────
+          else if (json.type === 'agent_done') {
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === currentMsgId ? { ...m, isStreaming: false } : m
+                  ),
+                }))
+              );
+            }
+          }
+
+          // ── Synthesis tokens ─────────────────────────────
+          else if (json.type === 'synthesis' && json.content) {
+            setLoopStatus('synthesizing');
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === currentMsgId ? { ...m, content: m.content + json.content, isStreaming: true } : m
+                  ),
+                }))
+              );
+            }
+          }
+
+          // ── Done ─────────────────────────────────────────
+          else if (json.type === 'done') {
+            // Finalize any streaming message
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) => {
+                    if (m.id !== currentMsgId) return m;
+                    if (json.error) {
+                      return { ...m, content: m.content || `Error: ${json.error}`, isStreaming: false };
+                    }
+                    if (!m.content && !m.thinking) {
+                      return { ...m, content: 'No response was received.', isStreaming: false };
+                    }
+                    return { ...m, isStreaming: false };
+                  }),
+                }))
+              );
+            }
+            if (json.usage?.total_tokens) {
+              setTokenCount((prev) => prev + json.usage.total_tokens);
+            } else {
+              setTokenCount((prev) => prev + Math.floor(Math.random() * 500 + 200));
+            }
+          }
+
+        } catch {
+          // Not valid JSON — skip
+        }
+      }
+    }
+
+    // Process remaining buffer
+    if (buffer.trim()) {
+      const trimmed = buffer.trim();
+      if (trimmed.startsWith('data: ')) {
+        try {
+          const json = JSON.parse(trimmed.slice(6));
+          if (json.type === 'token' && json.content) {
+            if (currentMsgId) {
+              setConversations((prev) =>
+                prev.map((c) => ({
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === currentMsgId ? { ...m, content: m.content + json.content } : m
+                  ),
+                }))
+              );
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    // Ensure all streaming is done
+    setConversations((prev) =>
+      prev.map((c) => ({
+        ...c,
+        messages: c.messages.map((m) => ({
+          ...m,
+          isStreaming: false,
+        })),
+      }))
+    );
+  }, [selectedModel, currentModel, enabledSkills]);
+
+
   const streamAgentResponse = useCallback(async (
     agentId: string,
     message: string,
@@ -2259,7 +3074,46 @@ export default function PlaygroundPage() {
                   ...c,
                   messages: c.messages.map((m) => {
                     if (m.id !== msgId) return m;
-                    return { ...m, content: m.content + json.content, isStreaming: true };
+                    return { ...m, content: m.content + json.content, isStreaming: true, isPlanning: false };
+                  }),
+                };
+              })
+            );
+          } else if (json.type === 'planning') {
+            // Agent is in planning mode
+            setLoopStatus('planning');
+            setConversations((prev) =>
+              prev.map((c) => {
+                if (c.id !== convId) return c;
+                return {
+                  ...c,
+                  messages: c.messages.map((m) => {
+                    if (m.id !== msgId) return m;
+                    return { ...m, isPlanning: true };
+                  }),
+                };
+              })
+            );
+          } else if (json.type === 'task_plan') {
+            // Structured task plan received
+            setLoopStatus('planning');
+            setConversations((prev) =>
+              prev.map((c) => {
+                if (c.id !== convId) return c;
+                return {
+                  ...c,
+                  messages: c.messages.map((m) => {
+                    if (m.id !== msgId) return m;
+                    return {
+                      ...m,
+                      isPlanning: false,
+                      taskPlan: {
+                        title: json.title || 'Task Plan',
+                        steps: json.steps || [],
+                        complexity: json.complexity || 'moderate',
+                        completedSteps: json.completedSteps || [],
+                      },
+                    };
                   }),
                 };
               })
@@ -2494,61 +3348,24 @@ export default function PlaygroundPage() {
     try {
       if (isMultiAgent) {
         setLoopStatus('coordinating');
+        setCollabPhase('coordinating');
 
-        // Send to each agent sequentially
-        for (const agentId of agentsToUse) {
-          if (abortController.signal.aborted) break;
-
-          // Add divider
-          const dividerId = `div-${Date.now()}-${agentId}`;
-          const dividerMsg: ChatMessage = {
-            id: dividerId,
-            role: 'assistant',
-            content: '',
-            agentId,
-            isMultiAgentDivider: true,
-          };
-
-          const assistantMsgId = `msg-${Date.now()}-resp-${agentId}`;
-          const assistantMessage: ChatMessage = {
-            id: assistantMsgId,
-            role: 'assistant',
-            content: '',
-            thinking: '',
-            agentId,
-            model: currentModel?.name,
-            timestamp: new Date().toISOString(),
-            isStreaming: true,
-          };
-
+        try {
+          await streamCollaborativeResponse(agentsToUse, trimmedInput, convId, abortController.signal);
+        } catch (err) {
+          if (abortController.signal.aborted) return;
+          const errorMsg = err instanceof Error ? err.message : 'Unknown error';
           setConversations((prev) =>
-            prev.map((c) => {
-              if (c.id !== convId) return c;
-              return { ...c, messages: [...c.messages, dividerMsg, assistantMessage] };
-            })
+            prev.map((c) => ({
+              ...c,
+              messages: [...c.messages, {
+                id: `collab-error-${Date.now()}`,
+                role: 'assistant' as const,
+                content: `Collaborative mode error: ${errorMsg}`,
+                isStreaming: false,
+              }],
+            }))
           );
-
-          setStreamingMsgId(assistantMsgId);
-          setLoopStatus('thinking');
-
-          try {
-            await streamAgentResponse(agentId, trimmedInput, convId, assistantMsgId, abortController.signal);
-          } catch (err) {
-            if (abortController.signal.aborted) break;
-            const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-            setConversations((prev) =>
-              prev.map((c) => ({
-                ...c,
-                messages: c.messages.map((m) =>
-                  m.id === assistantMsgId
-                    ? { ...m, content: m.content || `Error: ${errorMsg}`, isStreaming: false }
-                    : m
-                ),
-              }))
-            );
-          }
-
-          setStreamingMsgId(null);
         }
       } else {
         // Single agent mode
@@ -2583,6 +3400,8 @@ export default function PlaygroundPage() {
       // Outer error handling
     } finally {
       setLoopStatus('idle');
+      setCollabPhase(null);
+      setCollabAgentInfo(null);
       setStreamingMsgId(null);
       abortControllerRef.current = null;
     }
@@ -2665,7 +3484,7 @@ export default function PlaygroundPage() {
                     </h3>
                     <div className="flex items-center gap-1.5">
                       <span className="relative flex h-1.5 w-1.5">
-                        {isAnyStreaming || loopStatus === 'coordinating' ? (
+                        {isAnyStreaming || loopStatus === 'coordinating' || loopStatus === 'synthesizing' ? (
                           <>
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-60" />
                             <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500" />
@@ -2679,6 +3498,7 @@ export default function PlaygroundPage() {
                       </span>
                       <span className="text-[11px] text-muted-foreground">
                         {loopStatus === 'coordinating' ? 'Coordinating...'
+                          : loopStatus === 'synthesizing' ? 'Synthesizing...'
                           : loopStatus === 'thinking' ? 'Thinking...'
                           : loopStatus === 'tool_executing' ? 'Executing Tools...'
                           : isAnyStreaming ? 'Streaming...'
@@ -2780,7 +3600,7 @@ export default function PlaygroundPage() {
 
                   {/* Coordinating state */}
                   {loopStatus === 'coordinating' && (
-                    <CoordinatingState agents={multiAgentIds} />
+                    <CoordinatingState agents={multiAgentIds} phase={collabPhase} agentInfo={collabAgentInfo} />
                   )}
 
                   <div ref={messagesEndRef} />
@@ -2868,6 +3688,8 @@ export default function PlaygroundPage() {
                           >
                             {loopStatus === 'coordinating' ? (
                               <Network className="w-3.5 h-3.5 animate-pulse" />
+                            ) : loopStatus === 'synthesizing' ? (
+                              <Wand2 className="w-3.5 h-3.5 animate-pulse" />
                             ) : loopStatus === 'tool_executing' ? (
                               <Terminal className="w-3.5 h-3.5 animate-pulse" />
                             ) : loopStatus !== 'idle' ? (
@@ -2885,11 +3707,15 @@ export default function PlaygroundPage() {
                                 ? 'Thinking...'
                                 : loopStatus === 'tool_executing'
                                   ? 'Executing tools...'
-                                  : loopStatus !== 'idle'
-                                    ? 'Generating...'
-                                    : 'Type a message'
+                                  : loopStatus === 'coordinating'
+                                    ? 'Coordinating agents...'
+                                    : loopStatus === 'synthesizing'
+                                      ? 'Synthesizing responses...'
+                                      : loopStatus !== 'idle'
+                                        ? 'Generating...'
+                                        : 'Type a message'
                             : agentMode === 'multi'
-                              ? 'Send to all agents'
+                              ? 'Send to all agents collaboratively'
                               : 'Send message'
                           }
                         </TooltipContent>

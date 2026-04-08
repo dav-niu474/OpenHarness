@@ -98,7 +98,23 @@ export async function POST(req: NextRequest) {
       personaSection += `\n\n## Soul/Core Personality (soul.md)\n${agentData.soulPrompt}`;
     }
 
-    const finalSystemPrompt = systemPrompt + personaSection + skillSection;
+    // ── Inject Working Methodology for task decomposition ──────
+    const methodologySection = `
+
+## Working Methodology
+
+When faced with a **complex task** (anything requiring multiple steps, research, code changes, data analysis, or coordination), follow this structured approach:
+
+1. **First, decompose the task** — Break the user's request into clear, numbered subtasks. Identify dependencies between steps.
+2. **Create a task plan** — Use the TaskPlan tool to formally create a structured plan with steps and complexity assessment.
+3. **Create a checklist** — Present the plan to the user using markdown checkboxes (\`- [ ]\` for pending, \`- [x]\` for completed).
+4. **Execute each subtask** one by one — Use available tools (WebSearch, Bash, Read, Write, etc.) to complete each step.
+5. **Mark completed items** — As you finish each step, update the checklist by changing \`- [ ]\` to \`- [x]\`.
+6. **For complex subtasks** (heavy computation, separate research, or specialized work), delegate to a sub-agent using the Agent tool or SendMessage tool.
+
+**Important:** Always show the user your plan before executing. This gives them visibility into your approach and allows them to course-correct if needed. Update the plan as you progress. For simple questions (single lookup, quick answer), respond directly without creating a formal plan.`;
+
+    const finalSystemPrompt = systemPrompt + personaSection + skillSection + methodologySection;
     const modelInfo = getModelInfo(effectiveModelId);
 
     // ── Build messages array ──────────────────────────────────
@@ -154,6 +170,8 @@ export async function POST(req: NextRequest) {
         const toolToolContext: ToolContext = { agentId: dbAgentId || undefined, conversationId: dbConversationId || undefined };
         const allExecutedToolCalls: Array<{ id: string; name: string; arguments: string; result: string; success: boolean; duration: number }> = [];
         let loopIteration = 0;
+        let isPlanningPhase = false;
+        let lastTaskPlanEvent: { title: string; steps: string[]; complexity: string; completedSteps: number[] } | null = null;
 
         try {
           // ── Agent Loop ────────────────────────────────────────
@@ -213,6 +231,18 @@ export async function POST(req: NextRequest) {
                       if (content) {
                         fullContent += content;
                         iterationContent += content;
+
+                        // Detect planning phase: check if content contains checkbox markers
+                        const currentContent = fullContent;
+                        if (!isPlanningPhase && (currentContent.includes('- [ ]') || currentContent.includes('Task Plan'))) {
+                          isPlanningPhase = true;
+                          controller.enqueue(
+                            encoder.encode(
+                              `data: ${JSON.stringify({ type: 'planning', content: 'Agent is creating a task plan...' })}\n\n`
+                            )
+                          );
+                        }
+
                         controller.enqueue(
                           encoder.encode(
                             `data: ${JSON.stringify({ type: 'token', content, model: modelInfo.name })}\n\n`
@@ -314,9 +344,39 @@ export async function POST(req: NextRequest) {
               })),
             });
 
+            // End planning phase when tool calls are present (agent is executing)
+            if (isPlanningPhase) {
+              isPlanningPhase = false;
+            }
+
             // Execute each tool call
             for (const tc of completedToolCalls) {
               const startTime = Date.now();
+
+              // Send special task_plan event for TaskPlan tool calls
+              if (tc.name === 'TaskPlan') {
+                let parsedArgs: Record<string, unknown> = {};
+                try {
+                  parsedArgs = JSON.parse(tc.arguments);
+                } catch { /* keep empty */ }
+                const planTitle = String(parsedArgs.title || 'Untitled Plan');
+                const planSteps = Array.isArray(parsedArgs.steps) ? parsedArgs.steps.map((s: unknown) => String(s)) : [];
+                const planComplexity = String(parsedArgs.complexity || 'moderate');
+
+                // Send task_plan SSE event
+                controller.enqueue(
+                  encoder.encode(
+                    `data: ${JSON.stringify({
+                      type: 'task_plan',
+                      title: planTitle,
+                      steps: planSteps,
+                      complexity: planComplexity,
+                      completedSteps: [],
+                    })}\n\n`
+                  )
+                );
+                lastTaskPlanEvent = { title: planTitle, steps: planSteps, complexity: planComplexity, completedSteps: [] };
+              }
               controller.enqueue(
                 encoder.encode(
                   `data: ${JSON.stringify({ type: 'tool_executing', toolCallId: tc.id, name: tc.name })}\n\n`
