@@ -1,11 +1,20 @@
 import { NextRequest } from 'next/server';
 import { db, ensureDatabase } from '@/lib/db';
-import { chatStream, getModelInfo, type LLMMessage } from '@/lib/llm';
-import { getToolDefinitions, executeTool, type ToolContext } from '@/lib/tools';
+import { getModelInfo, type LLMMessage } from '@/lib/llm';
+import { runAgentLoop, createLoopState, type AgentLoopConfig } from '@/lib/agent/agent-loop';
+import type { ToolContext } from '@/lib/agent/tools';
 
 export const dynamic = 'force-dynamic';
 
-const MAX_AGENT_LOOP_ITERATIONS = 5;
+// ── Agent ID Mapping ────────────────────────────────────────────────
+
+const AGENT_ID_MAP: Record<string, string> = {
+  alpha: 'seed-alpha',
+  beta: 'seed-beta',
+  gamma: 'seed-gamma',
+};
+
+// ── POST Handler ────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,35 +25,17 @@ export async function POST(req: NextRequest) {
     if (!message || typeof message !== 'string') {
       return new Response(
         JSON.stringify({ success: false, error: 'Message is required' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
 
-    // Map short agent IDs to DB IDs
-    const agentIdMap: Record<string, string> = {
-      alpha: 'seed-alpha',
-      beta: 'seed-beta',
-      gamma: 'seed-gamma',
-    };
-    const dbAgentId = agentIdMap[agentId] || agentId || null;
+    // ── Resolve Agent ────────────────────────────────────────────
+    const dbAgentId = AGENT_ID_MAP[agentId] || agentId || null;
 
-    // Determine model
+    // ── Determine Model ──────────────────────────────────────────
     let effectiveModelId = effectiveModelReqId || 'z-ai/glm4.7';
-    let systemPrompt =
-      'You are OpenHarness AI Agent, a highly capable and intelligent assistant. You excel at:\n\n' +
-      '## Core Capabilities\n' +
-      '1. **Complex Problem Solving** — Break down complex problems into clear, actionable steps before solving them\n' +
-      '2. **Tool Usage** — Use available tools (WebSearch, TaskManager, etc.) proactively when they add value\n' +
-      '3. **Code Analysis** — Write, debug, and explain code with clear reasoning\n' +
-      '4. **Research & Synthesis** — Search for information, analyze it, and present well-structured summaries\n\n' +
-      '## Response Style\n' +
-      '- Be concise but thorough. Don\'t repeat yourself.\n' +
-      '- Use markdown formatting: headers, lists, code blocks, tables\n' +
-      '- When writing code, always include brief explanations\n' +
-      '- If you\'re unsure about something, say so honestly\n' +
-      '- Think step-by-step for complex problems before answering';
-
-    let agentData: { agentMd?: string; soulPrompt?: string; boundSkills?: string } | null = null;
+    let systemPrompt = buildBaseSystemPrompt();
+    let agentData: { agentMd?: string; soulPrompt?: string; boundSkills?: string; systemPrompt?: string; provider?: string; model?: string } | null = null;
 
     if (dbAgentId) {
       const agent = await db.agent.findUnique({ where: { id: dbAgentId } });
@@ -54,104 +45,28 @@ export async function POST(req: NextRequest) {
           agentMd: agent.agentMd || '',
           soulPrompt: agent.soulPrompt || '',
           boundSkills: agent.boundSkills || '[]',
+          systemPrompt: agent.systemPrompt || undefined,
+          provider: agent.provider || undefined,
+          model: agent.model || undefined,
         };
-        if (!modelId && agent.provider && agent.model) {
-          if (agent.provider === 'nvidia') {
-            effectiveModelId = agent.model;
-          }
+        if (!modelId && agent.provider === 'nvidia' && agent.model) {
+          effectiveModelId = agent.model;
         }
       }
     }
 
-    // ── Inject skills into system prompt ───────────────────────
-    const skillIdsToFetch: string[] = [];
-
-    if (Array.isArray(skillIds) && skillIds.length > 0) {
-      skillIdsToFetch.push(...skillIds);
-    }
-
-    if (agentData?.boundSkills) {
-      try {
-        const bound: string[] = JSON.parse(agentData.boundSkills);
-        if (Array.isArray(bound)) {
-          for (const id of bound) {
-            if (!skillIdsToFetch.includes(id)) {
-              skillIdsToFetch.push(id);
-            }
-          }
-        }
-      } catch { /* skip */ }
-    }
-
-    let skillSection = '';
-    if (skillIdsToFetch.length > 0) {
-      const skills = await db.skill.findMany({
-        where: { id: { in: skillIdsToFetch } },
-      });
-
-      if (skills.length > 0) {
-        const skillLines = skills.map((s) => {
-          const cat = s.category || 'general';
-          const desc = s.description || '';
-          return `- **${s.name}**: ${desc} (${cat})\n  Content: ${s.content}`;
-        }).join('\n\n');
-
-        skillSection = `\n\n## Available Skills\nThe following skills are loaded and available to you:\n${skillLines}\n\nYou should use these skills when relevant to the user's request.`;
-      }
-    }
-
-    // ── Inject agent persona and soul ─────────────────────────
-    let personaSection = '';
-    if (agentData?.agentMd) {
-      personaSection += `\n\n## Agent Persona (agent.md)\n${agentData.agentMd}`;
-    }
-    if (agentData?.soulPrompt) {
-      personaSection += `\n\n## Soul/Core Personality (soul.md)\n${agentData.soulPrompt}`;
-    }
-
-    // ── Inject Working Methodology for task decomposition ──────
-    const methodologySection = `
-
-## Working Methodology — IMPORTANT
-
-When faced with a **complex task** (anything requiring multiple steps, research, code changes, data analysis, or coordination), you MUST follow this structured approach:
-
-### Step 1: Analyze & Decompose
-Before answering, think about what the user is really asking. Break the request into clear sub-tasks:
-- What information do I need?
-- What steps are required?
-- What tools should I use?
-- Are there dependencies between steps?
-
-### Step 2: Present Your Plan
-Before diving into execution, briefly outline your approach. For example:
-> I'll approach this in 3 steps:
-> 1. First, I'll search for...
-> 2. Then, I'll analyze...
-> 3. Finally, I'll summarize...
-
-### Step 3: Execute Systematically
-- Use available tools (WebSearch, TaskManager, etc.) when they add value
-- Show your work — don't just give the final answer
-- For code: explain what you're doing and why
-- For research: cite your sources
-
-### Step 4: Verify & Summarize
-- Check your work for errors
-- Provide a clear, actionable summary
-- If the task is incomplete, explain what's left
-
-**For simple questions** (single lookup, quick fact, greeting): respond directly without a plan.
-
-**Key Principle**: Show your reasoning. Users value understanding HOW you arrived at an answer, not just the answer itself.`;
-
+    // ── Build System Prompt ──────────────────────────────────────
+    const skillSection = await buildSkillSection(skillIds, agentData?.boundSkills);
+    const personaSection = buildPersonaSection(agentData);
+    const methodologySection = buildMethodologySection(!!autonomous);
     const finalSystemPrompt = systemPrompt + personaSection + skillSection + methodologySection;
+
     const modelInfo = getModelInfo(effectiveModelId);
 
-    // ── Build messages array ──────────────────────────────────
+    // ── Build Message History ────────────────────────────────────
     const messages: LLMMessage[] = [{ role: 'system', content: finalSystemPrompt }];
-
     let dbConversationId: string | null = null;
+
     if (conversationId) {
       const conversation = await db.conversation.findUnique({
         where: { id: conversationId },
@@ -186,302 +101,46 @@ Before diving into execution, briefly outline your approach. For example:
       }
     }
 
-    // ── Get tool definitions ──────────────────────────────────
-    const toolDefs = getToolDefinitions();
+    // ── Create Agent Loop ────────────────────────────────────────
+    const toolContext: ToolContext = {
+      agentId: dbAgentId || undefined,
+      conversationId: dbConversationId || undefined,
+      autonomous: !!autonomous,
+    };
 
-    // ── Create SSE ReadableStream with Agent Loop ─────────────
+    const state = createLoopState(messages, {
+      modelId: effectiveModelId,
+      autonomous: !!autonomous,
+      toolContext,
+    });
+
+    // ── SSE ReadableStream ──────────────────────────────────────
     const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
 
     const readable = new ReadableStream({
       async start(controller) {
-        let fullContent = '';
-        let fullThinking = '';
-        let usageData: Record<string, number> | null = null;
-        const toolToolContext: ToolContext = { agentId: dbAgentId || undefined, conversationId: dbConversationId || undefined };
-        const allExecutedToolCalls: Array<{ id: string; name: string; arguments: string; result: string; success: boolean; duration: number }> = [];
-        let loopIteration = 0;
-        let isPlanningPhase = false;
-        let lastTaskPlanEvent: { title: string; steps: string[]; complexity: string; completedSteps: number[] } | null = null;
-
         try {
-          // ── Agent Loop ────────────────────────────────────────
-          while (loopIteration < MAX_AGENT_LOOP_ITERATIONS) {
-            loopIteration++;
-
-            // Notify about loop iteration
-            if (loopIteration > 1) {
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({ type: 'loop_iteration', iteration: loopIteration, maxIterations: MAX_AGENT_LOOP_ITERATIONS, model: modelInfo.name })}\n\n`
-                )
-              );
-            }
-
-            const providerStream = await chatStream(messages, effectiveModelId, toolDefs);
-            const reader = providerStream.getReader();
-            let buffer = '';
-            const toolCallsAccumulator: Record<string, { id: string; name: string; arguments: string }> = {};
-            let iterationThinking = '';
-            let iterationContent = '';
-            let hasToolCalls = false;
-
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() ?? '';
-
-                for (const line of lines) {
-                  const trimmed = line.trim();
-                  if (!trimmed) continue;
-                  if (trimmed === 'data: [DONE]') continue;
-
-                  if (trimmed.startsWith('data: ')) {
-                    try {
-                      const json = JSON.parse(trimmed.slice(6));
-                      const delta = json.choices?.[0]?.delta;
-
-                      // Thinking
-                      const thinkingContent = delta?.reasoning_content;
-                      if (thinkingContent) {
-                        fullThinking += thinkingContent;
-                        iterationThinking += thinkingContent;
-                        controller.enqueue(
-                          encoder.encode(
-                            `data: ${JSON.stringify({ type: 'thinking', content: thinkingContent, model: modelInfo.name })}\n\n`
-                          )
-                        );
-                      }
-
-                      // Regular content
-                      const content = delta?.content;
-                      if (content) {
-                        fullContent += content;
-                        iterationContent += content;
-
-                        // Detect planning phase: check if content contains checkbox markers
-                        const currentContent = fullContent;
-                        if (!isPlanningPhase && (currentContent.includes('- [ ]') || currentContent.includes('Task Plan'))) {
-                          isPlanningPhase = true;
-                          controller.enqueue(
-                            encoder.encode(
-                              `data: ${JSON.stringify({ type: 'planning', content: 'Agent is creating a task plan...' })}\n\n`
-                            )
-                          );
-                        }
-
-                        controller.enqueue(
-                          encoder.encode(
-                            `data: ${JSON.stringify({ type: 'token', content, model: modelInfo.name })}\n\n`
-                          )
-                        );
-                      }
-
-                      // Tool calls
-                      const toolCalls = delta?.tool_calls;
-                      if (toolCalls && Array.isArray(toolCalls)) {
-                        hasToolCalls = true;
-                        for (const tc of toolCalls) {
-                          if (tc.id) {
-                            toolCallsAccumulator[tc.index ?? 0] = {
-                              id: tc.id,
-                              name: tc.function?.name || 'unknown',
-                              arguments: tc.function?.arguments || '',
-                            };
-                          } else if (toolCallsAccumulator[tc.index ?? 0]) {
-                            toolCallsAccumulator[tc.index ?? 0].arguments += (tc.function?.arguments || '');
-                          }
-
-                          const acc = toolCallsAccumulator[tc.index ?? 0];
-                          if (acc) {
-                            controller.enqueue(
-                              encoder.encode(
-                                `data: ${JSON.stringify({
-                                  type: 'tool_call',
-                                  toolCallId: acc.id,
-                                  name: acc.name,
-                                  arguments: acc.arguments,
-                                  done: !tc.function?.arguments,
-                                  iteration: loopIteration,
-                                })}\n\n`
-                              )
-                            );
-                          }
-                        }
-                      }
-
-                      if (json.usage) {
-                        usageData = json.usage;
-                      }
-                    } catch {
-                      // Not valid JSON
-                    }
-                  }
-                }
-              }
-
-              // Process remaining buffer
-              if (buffer.trim()) {
-                const trimmed = buffer.trim();
-                if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
-                  try {
-                    const json = JSON.parse(trimmed.slice(6));
-                    const delta = json.choices?.[0]?.delta;
-                    const thinkingContent = delta?.reasoning_content;
-                    if (thinkingContent) {
-                      fullThinking += thinkingContent;
-                      iterationThinking += thinkingContent;
-                      controller.enqueue(
-                        encoder.encode(
-                          `data: ${JSON.stringify({ type: 'thinking', content: thinkingContent, model: modelInfo.name })}\n\n`
-                        )
-                      );
-                    }
-                    const content = delta?.content;
-                    if (content) {
-                      fullContent += content;
-                      iterationContent += content;
-                      controller.enqueue(
-                        encoder.encode(`data: ${JSON.stringify({ type: 'token', content, model: modelInfo.name })}\n\n`)
-                      );
-                    }
-                    if (json.usage) usageData = json.usage;
-                  } catch { /* skip */ }
-                }
-              }
-            } finally {
-              reader.releaseLock();
-            }
-
-            // ── If no tool calls, we're done ──────────────────
-            const completedToolCalls = Object.values(toolCallsAccumulator);
-            if (completedToolCalls.length === 0) {
-              break;
-            }
-
-            // ── Execute tool calls ─────────────────────────────
-            // Add assistant message with tool_calls to conversation
-            messages.push({
-              role: 'assistant',
-              content: iterationContent || '',
-              tool_calls: completedToolCalls.map(tc => ({
-                id: tc.id,
-                type: 'function' as const,
-                function: { name: tc.name, arguments: tc.arguments },
-              })),
-            });
-
-            // End planning phase when tool calls are present (agent is executing)
-            if (isPlanningPhase) {
-              isPlanningPhase = false;
-            }
-
-            // Execute each tool call
-            for (const tc of completedToolCalls) {
-              const startTime = Date.now();
-
-              // Send special task_plan event for TaskPlan tool calls
-              if (tc.name === 'TaskPlan') {
-                let parsedArgs: Record<string, unknown> = {};
-                try {
-                  parsedArgs = JSON.parse(tc.arguments);
-                } catch { /* keep empty */ }
-                const planTitle = String(parsedArgs.title || 'Untitled Plan');
-                const planSteps = Array.isArray(parsedArgs.steps) ? parsedArgs.steps.map((s: unknown) => String(s)) : [];
-                const planComplexity = String(parsedArgs.complexity || 'moderate');
-
-                // Send task_plan SSE event
-                controller.enqueue(
-                  encoder.encode(
-                    `data: ${JSON.stringify({
-                      type: 'task_plan',
-                      title: planTitle,
-                      steps: planSteps,
-                      complexity: planComplexity,
-                      completedSteps: [],
-                    })}\n\n`
-                  )
-                );
-                lastTaskPlanEvent = { title: planTitle, steps: planSteps, complexity: planComplexity, completedSteps: [] };
-              }
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({ type: 'tool_executing', toolCallId: tc.id, name: tc.name })}\n\n`
-                )
-              );
-
-              let parsedArgs: Record<string, unknown> = {};
-              try {
-                parsedArgs = JSON.parse(tc.arguments);
-              } catch { /* keep empty */ }
-
-              const result = await executeTool(tc.name, parsedArgs, toolToolContext);
-              const duration = Date.now() - startTime;
-
-              allExecutedToolCalls.push({
-                id: tc.id,
-                name: tc.name,
-                arguments: tc.arguments,
-                result: result.success ? result.result : result.error || 'Unknown error',
-                success: result.success,
-                duration,
-              });
-
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({
-                    type: 'tool_result',
-                    toolCallId: tc.id,
-                    name: tc.name,
-                    result: result.success ? result.result : result.error || 'Unknown error',
-                    success: result.success,
-                    duration,
-                    iteration: loopIteration,
-                  })}\n\n`
-                )
-              );
-
-              // Add tool result to messages
-              messages.push({
-                role: 'tool',
-                content: result.success ? result.result : `Error: ${result.error || 'Unknown error'}`,
-                tool_call_id: tc.id,
-              });
-            }
+          for await (const event of runAgentLoop(state, {
+            modelId: effectiveModelId,
+            autonomous: !!autonomous,
+            toolContext,
+          })) {
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+            );
           }
-
-          // ── Send final done event ────────────────────────────
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({
-                type: 'done',
-                usage: usageData,
-                model: modelInfo.name,
-                modelId: modelInfo.id,
-                provider: modelInfo.provider,
-                thinkingLength: fullThinking.length,
-                toolCalls: allExecutedToolCalls.length > 0 ? allExecutedToolCalls : undefined,
-                loopIterations: loopIteration,
-                autonomous: !!autonomous,
-              })}\n\n`
-            )
-          );
         } catch (error) {
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ type: 'done', error: String(error) })}\n\n`
-            )
+              `data: ${JSON.stringify({ type: 'done', error: String(error) })}\n\n`,
+            ),
           );
         } finally {
           // Save assistant message with full metadata
-          if (dbConversationId && (fullContent || fullThinking)) {
+          if (dbConversationId && (state.fullContent || state.fullThinking)) {
             try {
-              const toolCallsJson = allExecutedToolCalls.length > 0
-                ? JSON.stringify(allExecutedToolCalls.map(tc => ({
+              const toolCallsJson = state.toolCallsHistory.length > 0
+                ? JSON.stringify(state.toolCallsHistory.map(tc => ({
                     id: tc.id,
                     tool: tc.name,
                     input: (() => { try { return JSON.parse(tc.arguments); } catch { return {}; } })(),
@@ -490,8 +149,8 @@ Before diving into execution, briefly outline your approach. For example:
                     duration: tc.duration,
                   })))
                 : '[]';
-              const toolResultsJson = allExecutedToolCalls.length > 0
-                ? JSON.stringify(allExecutedToolCalls.map(tc => ({
+              const toolResultsJson = state.toolCallsHistory.length > 0
+                ? JSON.stringify(state.toolCallsHistory.map(tc => ({
                     toolCallId: tc.id,
                     name: tc.name,
                     result: tc.result,
@@ -504,11 +163,11 @@ Before diving into execution, briefly outline your approach. For example:
                 data: {
                   conversationId: dbConversationId,
                   role: 'assistant',
-                  content: fullContent,
-                  thinking: fullThinking,
+                  content: state.fullContent,
+                  thinking: state.fullThinking,
                   toolCalls: toolCallsJson,
                   toolResults: toolResultsJson,
-                  tokenCount: usageData?.total_tokens,
+                  tokenCount: state.usageData?.total_tokens,
                 },
               });
             } catch (dbError) {
@@ -532,7 +191,109 @@ Before diving into execution, briefly outline your approach. For example:
     console.error('Agent chat stream error:', error);
     return new Response(
       JSON.stringify({ success: false, error: String(error) }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
     );
   }
+}
+
+// ── System Prompt Builders ──────────────────────────────────────────
+
+function buildBaseSystemPrompt(): string {
+  return `You are OpenHarness AI Agent, a highly capable and intelligent assistant designed to help users accomplish complex tasks through systematic reasoning and tool usage.
+
+## Core Identity
+- You are honest, thorough, and methodical
+- You think step-by-step for complex problems
+- You proactively use tools when they add value
+- You communicate clearly with markdown formatting
+
+## Response Principles
+1. **Think first, then act** — Analyze the request before jumping to execution
+2. **Plan complex tasks** — For anything requiring 3+ steps, create a TaskPlan first
+3. **Use tools wisely** — Don't use tools unnecessarily, but don't hesitate when they help
+4. **Be concise but thorough** — Show your reasoning, don't repeat yourself
+5. **Cite your sources** — When using WebSearch, reference the URLs you found
+6. **Admit uncertainty** — If you're unsure, say so honestly`;
+}
+
+function buildPersonaSection(agentData: { agentMd?: string; soulPrompt?: string } | null): string {
+  if (!agentData) return '';
+  let section = '';
+  if (agentData.agentMd) section += `\n\n## Agent Persona\n${agentData.agentMd}`;
+  if (agentData.soulPrompt) section += `\n\n## Core Personality\n${agentData.soulPrompt}`;
+  return section;
+}
+
+async function buildSkillSection(skillIds?: string[], boundSkillsStr?: string): Promise<string> {
+  const skillIdsToFetch: string[] = [];
+
+  if (Array.isArray(skillIds) && skillIds.length > 0) {
+    skillIdsToFetch.push(...skillIds);
+  }
+
+  if (boundSkillsStr) {
+    try {
+      const bound: string[] = JSON.parse(boundSkillsStr);
+      if (Array.isArray(bound)) {
+        for (const id of bound) {
+          if (!skillIdsToFetch.includes(id)) skillIdsToFetch.push(id);
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  if (skillIdsToFetch.length === 0) return '';
+
+  const skills = await db.skill.findMany({
+    where: { id: { in: skillIdsToFetch } },
+  });
+
+  if (skills.length === 0) return '';
+
+  const skillLines = skills.map(s => {
+    const cat = s.category || 'general';
+    const desc = s.description || '';
+    return `- **${s.name}** (${cat}): ${desc}\n  ${s.content ? s.content.slice(0, 500) : ''}`;
+  }).join('\n\n');
+
+  return `\n\n## Loaded Skills\n${skillLines}\n\nUse these skills when relevant to the user's request.`;
+}
+
+function buildMethodologySection(isAutonomous: boolean): string {
+  const base = `
+## Working Methodology — CRITICAL
+
+### For Complex Tasks (3+ steps, research, multi-tool workflows):
+1. **Analyze**: What is the user REALLY asking? What are the implicit requirements?
+2. **Plan**: Use the TaskPlan tool to create a structured plan before executing
+3. **Execute**: Follow the plan step-by-step, using appropriate tools
+4. **Verify**: Check your work for errors and completeness
+5. **Summarize**: Provide a clear, actionable summary
+
+### For Simple Tasks (single lookup, quick fact, greeting):
+- Respond directly without creating a plan
+- Use tools only if they add clear value
+
+### Tool Usage Strategy:
+- **WebSearch** → When you need current/external information
+- **WebFetch** → When you need to read a specific URL's content
+- **TaskPlan** → When the task has 3+ steps (ALWAYS plan first!)
+- **TaskCreate/TaskUpdate** → For persistent task tracking
+- **Skill** → To load specialized knowledge modules
+- **Agent/SendMessage** → For multi-agent collaboration`;
+
+  if (isAutonomous) {
+    return base + `
+
+### Autonomous Mode — Active
+You are running in autonomous mode. This means:
+- Maximum ${10} iterations allowed
+- Create a TaskPlan at the very beginning
+- Execute each step systematically
+- After each major step, briefly report progress
+- If a step fails, try an alternative approach before giving up
+- Focus on completing the entire task, not just the first part`;
+  }
+
+  return base;
 }

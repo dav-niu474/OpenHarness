@@ -564,13 +564,16 @@ ${scratchpadContext}
 
 ## 十、实施路线图（六步渐进式）
 
-### Phase 1: 对话循环 + 工具系统（Week 1-2）
-- [ ] 重构 `stream/route.ts`：State对象模式
-- [ ] 实现 `buildTool` 工厂函数
-- [ ] 优化工具描述（使用指导风格）
-- [ ] 工具结果智能截断/摘要
-- [ ] 错误恢复 + 断路器（连续3次失败）
-- [ ] Token预算检查
+### Phase 1: 对话循环 + 工具系统 ✅ COMPLETED
+- [x] 重构 `stream/route.ts`：State对象模式 → `src/lib/agent/agent-loop.ts` (AsyncGenerator + LoopState)
+- [x] 实现 `buildTool` 工厂函数 → `src/lib/agent/tools.ts` (buildTool factory + TOOL_REGISTRY)
+- [x] 优化工具描述（使用指导风格）→ whenToUse/whenNotToUse + examples on all tools
+- [x] 工具结果智能截断/摘要 → processToolResult() with head+tail truncation
+- [x] 错误恢复 + 断路器（连续3次失败）→ Circuit breaker in agent-loop.ts
+- [x] Token预算检查 → TokenUsage tracking in LoopState
+- [x] 核心类型定义 → `src/lib/agent/types.ts` (LoopState, StreamEvent, AgentTool, etc.)
+- [x] 思考过程显示修复 → 已验证ThinkingBlock自动展开/折叠逻辑正确
+- [x] 协作路由导入更新 → collaborative/route.ts 使用新的 @/lib/agent/tools 路径
 
 ### Phase 2: 权限管线 + 上下文管理（Week 3）
 - [ ] 四阶段权限检查

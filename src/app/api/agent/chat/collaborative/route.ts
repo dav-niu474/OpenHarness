@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { db, ensureDatabase } from '@/lib/db';
 import { chatStream, getModelInfo, type LLMMessage } from '@/lib/llm';
-import { getToolDefinitions, executeTool, type ToolContext } from '@/lib/tools';
+import { getToolDefinitions, executeTool, type ToolContext } from '@/lib/agent/tools';
 
 export const dynamic = 'force-dynamic';
 

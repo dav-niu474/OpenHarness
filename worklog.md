@@ -1301,3 +1301,61 @@ Stage Summary:
   - 断路器+降级策略替代简单错误处理
   - 依赖注入隔离I/O
 - 实施路线图更新为8周计划，6个Phase
+
+---
+
+## Task ID: Phase 1 - Agent Architecture Refactoring
+### Work Task
+Implement Phase 1 of the Claude Code-inspired agent architecture: Agent Loop (AsyncGenerator + State object), Tool System (buildTool factory + enriched descriptions), Circuit Breaker, and Token Budget tracking.
+
+### Work Summary
+Successfully implemented all Phase 1 components of the new agent architecture. All code passes lint and type checks. The system maintains full backward compatibility with the existing frontend.
+
+**Files Created:**
+1. `src/lib/agent/types.ts` — Core type definitions
+   - LoopState, StreamEvent (union type), ToolCallRecord, TaskPlanEvent, AgentTool, ToolResult, ToolContext, TokenBudget
+   - TOOL_DEFAULTS (Fail-Closed: isReadOnly=false, isDestructive=true, permissionMode='restricted')
+   - DEFAULT_MAX_ITERATIONS=10, DEFAULT_MAX_CONSECUTIVE_FAILURES=3, MAX_TOOL_RESULT_LENGTH=4000
+   - agentToolToOpenAI() helper for converting enriched descriptions
+
+2. `src/lib/agent/tools.ts` — Complete tool system rewrite
+   - buildTool() factory function with fail-closed defaults
+   - TOOL_REGISTRY: 12 tools with whenToUse/whenNotToUse/examples descriptions
+   - Removed: LSP, Bash(simulated), Read, Write, Edit, Glob, Grep, MCPTool (serverless-incompatible)
+   - Kept: WebSearch, WebFetch, TaskPlan, TaskCreate, TaskList, TaskUpdate, Agent, SendMessage, Skill, Config, Brief
+   - processToolResult() with head+tail smart truncation (4000 char limit)
+   - Input validation support via validateInput on each tool
+   - All tools have isReadOnly/isDestructive/permissionMode safety metadata
+
+3. `src/lib/agent/agent-loop.ts` — AsyncGenerator-based agent loop
+   - runAgentLoop() async generator yielding StreamEvent objects
+   - createLoopState() factory for initial state
+   - Circuit breaker: consecutiveFailures tracking, trip at 3 failures
+   - On circuit breaker trip: injects system notice, lets LLM summarize the failure
+   - AbortController checked at each iteration top
+   - streamLLMResponse() internal generator that returns accumulated tool calls
+   - TokenUsage tracking from LLM responses
+
+**Files Modified:**
+4. `src/app/api/agent/chat/stream/route.ts` — Refactored to use new agent loop
+   - Uses createLoopState() + runAgentLoop() instead of inline while loop
+   - System prompt builders extracted: buildBaseSystemPrompt(), buildPersonaSection(), buildSkillSection(), buildMethodologySection()
+   - Simplified from 538 lines to ~200 lines
+   - Same SSE event format (fully backward compatible with frontend)
+
+5. `src/app/api/agent/chat/collaborative/route.ts` — Import path updated
+   - Changed from '@/lib/tools' to '@/lib/agent/tools'
+
+6. `agent-ctx/agent-architecture-design.md` — Phase 1 marked as completed
+
+**Key Architecture Changes:**
+- Old: Inline while loop with scattered variables → New: AsyncGenerator with structured LoopState
+- Old: Flat tool array with simple descriptions → New: buildTool factory with whenToUse/whenNotToUse/examples
+- Old: No error recovery → New: Circuit breaker (3 consecutive failures → graceful degradation)
+- Old: No token tracking → New: TokenUsage in LoopState
+- Old: Tools in src/lib/tools.ts → New: Tools in src/lib/agent/tools.ts with typed registry
+
+**Backward Compatibility:**
+- SSE event format unchanged — frontend PlaygroundPage requires zero changes
+- ThinkingBlock auto-expand/collapse logic verified correct
+- All existing API routes continue to work
