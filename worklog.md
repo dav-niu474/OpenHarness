@@ -985,3 +985,38 @@ Stage Summary:
 - Multi-agent mode (sequential independent streams) already working
 - Autonomous mode parameter passed through backend (UI toggle available)
 - Skills system working via prompt injection + Skill tool for runtime loading
+
+---
+
+## Task ID: persist-sessions
+### Agent: Main Agent
+### Task: Implement full chat session data persistence (conversation list loading, message resume, delete API, title sync, tool call/thinking persistence)
+
+### Work Log:
+- Audited current persistence state: backend DB models exist (Conversation, Message), CRUD APIs exist, streaming route saves messages, but frontend never loads from DB on mount
+- Added `thinking` field to Message model in Prisma schema and raw SQL CREATE TABLE in db.ts
+- Updated streaming chat route (`/api/agent/chat/stream/route.ts`) to persist `thinking`, `toolCalls`, and `toolResults` JSON when saving assistant messages
+- Updated streaming route's conversation history loading to also select `thinking`, `toolCalls`, `toolResults` fields
+- Regenerated Prisma client after schema changes
+- Rewrote PlaygroundPage state initialization: removed hardcoded `conv-default` welcome conversation, initialized empty conversations array
+- Added `useEffect` to load conversation list from `GET /api/conversations` on component mount
+- Added `loadConversationMessages()` callback that fetches `GET /api/conversations/[id]` and parses DB messages (including thinking, toolCalls JSON) into ChatMessage format
+- Updated `onConvSelect` handler to call `loadConversationMessages()` when switching conversations (lazy loading with `_hasMessages` flag)
+- Updated `onAgentChange` handler to also load messages for the first conversation of the selected agent
+- Updated `deleteConversation()` to call `DELETE /api/conversations/[id]` API (fire-and-forget) for DB-backed conversations
+- Updated `handleSend()` to sync conversation title to DB via `PUT /api/conversations/[id]` when first message is sent
+- Added `isLoadingConversations` and `isLoadingMessages` state with loading UI indicators
+- Updated ConversationListPanel to accept `isLoading` prop for empty state loading indicator
+- Added loading spinner in chat area when messages are being loaded from DB
+- All lint checks pass with zero errors
+
+### Stage Summary:
+- **Before**: Chat sessions were purely in-memory — page refresh lost all conversations
+- **After**: Full persistence lifecycle:
+  1. Page loads → fetches conversation list from DB → shows in sidebar
+  2. Click conversation → fetches messages from DB → displays with thinking/toolCalls preserved
+  3. New chat → creates DB conversation → sends with conversationId → messages saved to DB
+  4. Delete chat → removes from both UI and DB
+  5. First message → auto-titles conversation and syncs to DB
+  6. Tool calls, thinking, and results now persisted to DB
+- **Files modified**: `prisma/schema.prisma`, `src/lib/db.ts`, `src/app/api/agent/chat/stream/route.ts`, `src/components/pages/PlaygroundPage.tsx`

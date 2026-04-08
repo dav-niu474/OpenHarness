@@ -100,6 +100,7 @@ model Message {
   conversationId String
   role          String                       // user, assistant, system, tool
   content       String   @default("")
+  thinking      String   @default("")        // Agent reasoning/thinking content
   toolCalls     String   @default("[]")      // JSON: array of tool call objects
   toolResults   String   @default("[]")      // JSON: array of tool result objects
   tokenCount    Int?

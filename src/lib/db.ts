@@ -156,6 +156,7 @@ async function createTables() {
       "conversationId" TEXT NOT NULL,
       "role" TEXT NOT NULL,
       "content" TEXT NOT NULL DEFAULT '',
+      "thinking" TEXT NOT NULL DEFAULT '',
       "toolCalls" TEXT NOT NULL DEFAULT '[]',
       "toolResults" TEXT NOT NULL DEFAULT '[]',
       "tokenCount" INTEGER,

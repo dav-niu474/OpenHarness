@@ -1705,6 +1705,7 @@ function ConversationListPanel({
   conversations,
   onNewChat,
   onDeleteConv,
+  isLoading,
 }: {
   selectedAgent: string;
   onAgentChange: (id: string) => void;
@@ -1713,6 +1714,7 @@ function ConversationListPanel({
   conversations: ConversationItem[];
   onNewChat: () => void;
   onDeleteConv: (id: string) => void;
+  isLoading?: boolean;
 }) {
   const filteredConvs = conversations.filter((c) => c.agentId === selectedAgent);
 
@@ -1755,13 +1757,14 @@ function ConversationListPanel({
           {filteredConvs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-xs text-muted-foreground gap-2">
               <MessageSquare className="w-8 h-8 text-muted-foreground/30" />
-              <span>No conversations yet</span>
-              <span className="text-[10px]">Start a new chat above</span>
+              <span>{isLoading ? 'Loading...' : 'No conversations yet'}</span>
+              {!isLoading && <span className="text-[10px]">Start a new chat above</span>}
             </div>
           ) : (
             filteredConvs.map((conv) => {
               const isActive = conv.id === activeConvId;
               const agent = getAgentConfig(conv.agentId);
+              const msgCount = conv.messages.length;
               return (
                 <div
                   key={conv.id}
@@ -1904,25 +1907,10 @@ function AgentLoopStatusBar({
 export default function PlaygroundPage() {
   const [selectedAgent, setSelectedAgent] = useState('alpha');
   const [selectedModel, setSelectedModel] = useState('z-ai/glm4.7');
-  const [conversations, setConversations] = useState<ConversationItem[]>(() => [
-    {
-      id: 'conv-default',
-      title: 'Welcome Chat',
-      agentId: 'alpha',
-      messages: [
-        {
-          id: 'msg-welcome',
-          role: 'assistant',
-          content: 'Hello! I am your **OpenHarness AI Agent**. I have access to tools and can execute them in real-time.\n\nI support:\n- 🧠 **Deep Thinking** — Reasoning process visualization\n- 🔧 **Tool Execution** — Real WebSearch, Task management, and more\n- 📚 **Skills System** — Knowledge module loading\n- 🔄 **Agent Loop** — Multi-step tool calling with automatic iteration\n- 🤖 **Multi-Agent** — Switch between specialized agents\n\nTry asking me to **search the web** for information, **create tasks**, or **list available agents**!',
-          agentId: 'alpha',
-          model: 'GLM 4.7',
-          timestamp: new Date().toISOString(),
-        },
-      ],
-      createdAt: new Date().toISOString(),
-    },
-  ]);
-  const [activeConvId, setActiveConvId] = useState('conv-default');
+  const [conversations, setConversations] = useState<ConversationItem[]>([]);
+  const [activeConvId, setActiveConvId] = useState('');
+  const [isLoadingConversations, setIsLoadingConversations] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const [loopStatus, setLoopStatus] = useState<'idle' | 'thinking' | 'executing' | 'tool_executing' | 'coordinating'>('idle');
   const [tokenCount, setTokenCount] = useState(0);
@@ -1973,6 +1961,99 @@ export default function PlaygroundPage() {
       }
     };
     fetchSkills();
+  }, []);
+
+  // ── Agent ID mapping (frontend short ID → DB ID) ────────────
+  const agentIdMap: Record<string, string> = { alpha: 'seed-alpha', beta: 'seed-beta', gamma: 'seed-gamma' };
+  const reverseAgentIdMap: Record<string, string> = { 'seed-alpha': 'alpha', 'seed-beta': 'beta', 'seed-gamma': 'gamma' };
+
+  // ── Load conversations from DB on mount ──────────────────────
+  useEffect(() => {
+    const fetchConversations = async () => {
+      setIsLoadingConversations(true);
+      try {
+        const res = await fetch('/api/conversations?limit=100');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.data) {
+            const loaded: ConversationItem[] = data.data.map((c: Record<string, unknown>) => ({
+              id: c.id as string,
+              title: (c.title as string) || 'Untitled',
+              agentId: reverseAgentIdMap[(c.agentId as string)] || (c.agentId as string) || 'alpha',
+              messages: [], // Messages loaded on demand
+              createdAt: (c.createdAt as string) || new Date().toISOString(),
+              _hasMessages: false as boolean, // Track if messages have been loaded
+            }));
+            setConversations(loaded);
+            // Auto-select the most recent conversation for the selected agent
+            const firstConv = loaded.find((c) => c.agentId === selectedAgent);
+            if (firstConv) {
+              setActiveConvId(firstConv.id);
+            }
+          }
+        }
+      } catch {
+        // Failed to load conversations, start fresh
+      } finally {
+        setIsLoadingConversations(false);
+      }
+    };
+    fetchConversations();
+  }, []);
+
+  // ── Load messages for a conversation from DB ─────────────────
+  const loadConversationMessages = useCallback(async (convId: string) => {
+    if (!convId) return;
+    setIsLoadingMessages(true);
+    try {
+      const res = await fetch(`/api/conversations/${convId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.data?.messages) {
+          const dbMessages: ChatMessage[] = data.data.messages.map((m: Record<string, unknown>, idx: number) => {
+            const msg: ChatMessage = {
+              id: (m.id as string) || `db-msg-${idx}`,
+              role: (m.role as ChatMessage['role']) || 'assistant',
+              content: (m.content as string) || '',
+              timestamp: (m.createdAt as string) || undefined,
+            };
+            // Parse thinking
+            if (m.thinking && typeof m.thinking === 'string' && m.thinking.length > 0) {
+              msg.thinking = m.thinking;
+            }
+            // Parse tool calls
+            if (m.toolCalls && typeof m.toolCalls === 'string') {
+              try {
+                const parsed = JSON.parse(m.toolCalls);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                  msg.toolCalls = parsed.map((tc: Record<string, unknown>) => ({
+                    id: tc.id as string | undefined,
+                    tool: (tc.tool || tc.name || 'unknown') as string,
+                    input: (tc.input || {}) as Record<string, unknown>,
+                    result: tc.result as string | undefined,
+                    status: (tc.status || 'success') as ToolCallInfo['status'],
+                    duration: tc.duration as number | undefined,
+                    iteration: tc.iteration as number | undefined,
+                  }));
+                }
+              } catch { /* skip */ }
+            }
+            return msg;
+          });
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === convId
+                ? { ...c, messages: dbMessages, _hasMessages: true } as ConversationItem & { _hasMessages?: boolean }
+                : c
+            )
+          );
+        }
+      }
+    } catch {
+      // Failed to load messages
+    } finally {
+      setIsLoadingMessages(false);
+    }
   }, []);
 
   // Auto-scroll to bottom
@@ -2055,6 +2136,15 @@ export default function PlaygroundPage() {
 
   const deleteConversation = useCallback(
     (convId: string) => {
+      // Skip deleting the default or empty conversations
+      if (!convId || convId.startsWith('conv-') && convId !== activeConvId) {
+        setConversations((prev) => prev.filter((c) => c.id !== convId));
+        return;
+      }
+      // Call API to delete from DB (fire and forget)
+      if (convId && !convId.startsWith('conv-')) {
+        fetch(`/api/conversations/${convId}`, { method: 'DELETE' }).catch(() => { /* ignore */ });
+      }
       setConversations((prev) => prev.filter((c) => c.id !== convId));
       if (activeConvId === convId) {
         const remaining = conversations.filter((c) => c.id !== convId && c.agentId === selectedAgent);
@@ -2369,16 +2459,31 @@ export default function PlaygroundPage() {
       timestamp: new Date().toISOString(),
     };
 
+    // Generate title from first message and sync to DB
+    const isFirstMessage = (conversations.find((c) => c.id === convId)?.messages.length ?? 0) <= 1;
+    const newTitle = isFirstMessage
+      ? trimmedInput.slice(0, 40) + (trimmedInput.length > 40 ? '...' : '')
+      : conversations.find((c) => c.id === convId)?.title || 'Untitled';
+
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id !== convId) return c;
         return {
           ...c,
           messages: [...c.messages, userMessage],
-          title: c.messages.length <= 1 ? trimmedInput.slice(0, 40) + (trimmedInput.length > 40 ? '...' : '') : c.title,
+          title: newTitle,
         };
       })
     );
+
+    // Sync title to DB if this is a DB-backed conversation
+    if (isFirstMessage && convId && !convId.startsWith('conv-')) {
+      fetch(`/api/conversations/${convId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle }),
+      }).catch(() => { /* ignore */ });
+    }
 
     setInputValue('');
     setTotalThinkingChars(0);
@@ -2509,13 +2614,29 @@ export default function PlaygroundPage() {
               onAgentChange={(id) => {
                 setSelectedAgent(id);
                 const firstConv = conversations.find((c) => c.agentId === id);
-                setActiveConvId(firstConv?.id ?? '');
+                if (firstConv) {
+                  setActiveConvId(firstConv.id);
+                  // Load messages if not yet loaded
+                  if (!(firstConv as Record<string, unknown>)._hasMessages) {
+                    loadConversationMessages(firstConv.id);
+                  }
+                } else {
+                  setActiveConvId('');
+                }
               }}
               activeConvId={activeConvId}
-              onConvSelect={setActiveConvId}
+              onConvSelect={(convId) => {
+                setActiveConvId(convId);
+                // Load messages from DB if not yet loaded
+                const conv = conversations.find((c) => c.id === convId);
+                if (conv && !(conv as Record<string, unknown>)._hasMessages) {
+                  loadConversationMessages(convId);
+                }
+              }}
               conversations={conversations}
               onNewChat={createNewChat}
               onDeleteConv={deleteConversation}
+              isLoading={isLoadingConversations}
             />
           </ResizablePanel>
 
@@ -2640,7 +2761,12 @@ export default function PlaygroundPage() {
               {/* Chat Messages — using native overflow-y-auto instead of ScrollArea */}
               <div ref={chatScrollRef} className="flex-1 overflow-y-auto relative scroll-smooth">
                 <div className="flex flex-col gap-4 p-5 max-w-3xl mx-auto w-full min-h-full">
-                  {messages.length === 0 ? (
+                  {isLoadingMessages ? (
+                    <div className="flex flex-col items-center justify-center py-16 gap-3">
+                      <Loader2 className="w-6 h-6 text-muted-foreground animate-spin" />
+                      <span className="text-xs text-muted-foreground">Loading messages...</span>
+                    </div>
+                  ) : messages.length === 0 ? (
                     <WelcomeState agent={getAgentConfig(selectedAgent)} onQuickPrompt={handleQuickPrompt} />
                   ) : (
                     messages.map((msg) => (

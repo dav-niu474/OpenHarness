@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
         include: {
           messages: {
             orderBy: { createdAt: 'asc' },
-            select: { role: true, content: true },
+            select: { role: true, content: true, thinking: true, toolCalls: true, toolResults: true },
           },
         },
       });
@@ -386,14 +386,37 @@ export async function POST(req: NextRequest) {
             )
           );
         } finally {
-          // Save assistant message
-          if (dbConversationId && fullContent) {
+          // Save assistant message with full metadata
+          if (dbConversationId && (fullContent || fullThinking)) {
             try {
+              const toolCallsJson = allExecutedToolCalls.length > 0
+                ? JSON.stringify(allExecutedToolCalls.map(tc => ({
+                    id: tc.id,
+                    tool: tc.name,
+                    input: (() => { try { return JSON.parse(tc.arguments); } catch { return {}; } })(),
+                    result: tc.result,
+                    status: tc.success ? 'success' : 'error',
+                    duration: tc.duration,
+                  })))
+                : '[]';
+              const toolResultsJson = allExecutedToolCalls.length > 0
+                ? JSON.stringify(allExecutedToolCalls.map(tc => ({
+                    toolCallId: tc.id,
+                    name: tc.name,
+                    result: tc.result,
+                    success: tc.success,
+                    duration: tc.duration,
+                  })))
+                : '[]';
+
               await db.message.create({
                 data: {
                   conversationId: dbConversationId,
                   role: 'assistant',
                   content: fullContent,
+                  thinking: fullThinking,
+                  toolCalls: toolCallsJson,
+                  toolResults: toolResultsJson,
                   tokenCount: usageData?.total_tokens,
                 },
               });
