@@ -844,3 +844,31 @@ Successfully refactored the existing `AgentFormDialog` component in the Dashboar
 
 **Files modified:**
 - `src/components/pages/DashboardPage.tsx` (refactored AgentFormDialog with Tabs)
+
+---
+
+## Task ID: 1 - Main Agent (Vercel Diagnosis & Fix)
+
+### Work Task
+Diagnose and fix deployed Vercel application issues: schema mismatch causing API errors, missing data on cold starts.
+
+### Work Log
+- Tested all 17+ Vercel API endpoints — found `/api/agents` and `/api/seed` returning 500 errors
+- Root cause: `soulPrompt`, `agentMd`, `boundSkills` columns added to Prisma schema but missing from raw SQL in `db.ts createTables()`
+- Vercel uses ephemeral SQLite at `/tmp` — schema is created via raw SQL on each cold start
+- Fixed `db.ts`: Added `dropAllTables()` function, updated `createTables()` SQL to include 3 new Agent columns
+- Added `PRAGMA table_info` check in `ensureDatabase()` to detect outdated schema and auto-migrate
+- Updated `inlineSeed()` in db.ts with soulPrompt, agentMd, boundSkills for all 3 agents
+- Updated `/api/seed/route.ts` to include new fields in agent upsert (both create and update)
+- Updated `/api/agents/[id]/route.ts` PUT handler to support soulPrompt, agentMd, boundSkills updates
+- Redesigned ThinkingBlock component: minimalist, borderless, subtle typography, no flashy animations
+- Added Create Agent dialog to DashboardPage with 3-tab layout (Basic Info / Skills / Profile)
+- Created SkillSelector component with category badges and multi-select
+- All lint checks pass, all endpoints verified on both local and Vercel
+
+### Stage Summary
+- **Schema mismatch fixed**: Vercel cold starts now auto-detect outdated schema and recreate tables
+- **Skills injection working**: Agent boundSkills are populated and injected into system prompt during chat
+- **ThinkingBlock redesigned**: Clean, professional, minimal — no gradients/glow/borders
+- **Create Agent dialog**: Full form with skill binding, agent.md, soul.md configuration
+- **Deployment verified**: All 17+ API endpoints returning 200 with real data on https://openharness-one.vercel.app
